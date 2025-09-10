@@ -14,8 +14,6 @@ import astrbot.api.message_components as Comp
     "1.0",
     "https://github.com/Foolllll-J/astrbot_plugin_file_checker"
 )
-
-
 class GroupFileCheckerPlugin(Star):
     def __init__(self, context: Context, config: Optional[Dict] = None):
         super().__init__(context)
@@ -30,13 +28,13 @@ class GroupFileCheckerPlugin(Star):
         
         logger.info("插件 [群文件失效检查] 已加载。")
         
-        # 根据白名单配置打印不同的启动信息
         if self.group_whitelist:
             logger.info(f"已启用群聊白名单，只在以下群组生效: {self.group_whitelist}")
         else:
             logger.info("未配置群聊白名单，插件将在所有群组生效。")
 
-    @filter.group
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
         # 使用白名单进行过滤
         if self.group_whitelist and event.group_id not in self.group_whitelist:
