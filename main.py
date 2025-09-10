@@ -40,6 +40,16 @@ class GroupFileCheckerPlugin(Star):
 
         for segment in event.get_messages():
             if isinstance(segment, Comp.File):
+                # +++ 新增的“深度扫描”调试代码 +++
+                logger.info("--- 深入检查文件组件(segment) ---")
+                try:
+                    # 尝试打印对象的所有属性和值，这是最详细的信息
+                    logger.info(f"segment.__dict__: {segment.__dict__}")
+                except AttributeError:
+                    # 如果上面的方法失败，就打印它的所有可用属性名
+                    logger.info(f"segment dir(): {dir(segment)}")
+                logger.info("---------------------------------")
+                # +++ 调试代码结束 +++
                 file_name = segment.name
                 logger.info(f"检测到群 {group_id} 中的文件消息: '{file_name}'，已加入处理队列。")
                 asyncio.create_task(self._handle_file_check(group_id, file_name, segment))
