@@ -12,7 +12,7 @@ import astrbot.api.message_components as Comp
     "Foolllll",
     "群文件失效检查",
     "1.0",
-    "https://github.com/Foolllll-J/astrbot_plugin_file_checker",
+    "https://github.com/Foolllll-J/astrbot_plugin_file_checker"
 )
 
 
