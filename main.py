@@ -64,7 +64,7 @@ class GroupFileCheckerPlugin(Star):
                 
                 try:
                     success_message = "✅ 您发送的文件检查有效，可以正常下载。"
-                    chain = MessageChain([Comp.Reply(id_=message_id), Comp.Plain(text=success_message)])
+                    chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=success_message)])
                     await event.send(chain)
                     logger.info(f"已向群 {group_id} 回复文件有效通知。")
                 except Exception as reply_e:
@@ -81,7 +81,7 @@ class GroupFileCheckerPlugin(Star):
                 logger.error(f"❌ [{group_id}] 文件 '{display_name}' 经检查已失效! 框架返回错误: {e}")
                 try:
                     failure_message = "❌ 您发送的文件经检查已失效或被服务器屏蔽。"
-                    chain = MessageChain([Comp.Reply(id_=message_id), Comp.Plain(text=failure_message)])
+                    chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=failure_message)])
                     await event.send(chain)
                     logger.info(f"已向群 {group_id} 回复文件失效通知。")
                 except Exception as send_e:
