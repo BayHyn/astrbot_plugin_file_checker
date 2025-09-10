@@ -19,11 +19,9 @@ class GroupFileCheckerPlugin(Star):
         super().__init__(context)
         self.config = config if config else {}
         
-        # 读取白名单配置
         self.group_whitelist: List[int] = self.config.get("group_whitelist", [])
         self.group_whitelist = [int(gid) for gid in self.group_whitelist]
         
-        # 初始化信号量，限制并发
         self.download_semaphore = asyncio.Semaphore(5)
         
         logger.info("插件 [群文件失效检查] 已加载。")
@@ -33,18 +31,18 @@ class GroupFileCheckerPlugin(Star):
         else:
             logger.info("未配置群聊白名单，插件将在所有群组生效。")
 
-
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
-        # 使用白名单进行过滤
-        if self.group_whitelist and event.group_id not in self.group_whitelist:
+        group_id = int(event.get_group_id())
+        
+        if self.group_whitelist and group_id not in self.group_whitelist:
             return
 
         for segment in event.message:
             if isinstance(segment, Comp.File):
                 file_name = segment.data.get('name', '未知文件名')
-                logger.info(f"检测到群 {event.group_id} 中的文件消息: '{file_name}'，已加入处理队列。")
-                asyncio.create_task(self._handle_file_check(event.group_id, file_name, segment))
+                logger.info(f"检测到群 {group_id} 中的文件消息: '{file_name}'，已加入处理队列。")
+                asyncio.create_task(self._handle_file_check(group_id, file_name, segment))
                 break
 
     async def _handle_file_check(self, group_id: int, file_name: str, file_component: Comp.File):
