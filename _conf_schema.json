@@ -4,5 +4,17 @@
         "hint": "仅在白名单里的群启用本插件功能，不填表示所有群都启用",
         "type": "list",
         "default": []
+    },
+    "notify_on_success": {
+        "description": "成功时发送通知",
+        "hint": "开启后，文件检查有效时也会发送一条回复通知。关闭则只在文件失效时通知。",
+        "type": "bool",
+        "default": true
+    },
+    "check_delay_seconds": {
+        "description": "检查延时 (秒)",
+        "hint": "收到文件后，等待多少秒再开始进行有效性检查。",
+        "type": "int",
+        "default": 30
     }
 }
