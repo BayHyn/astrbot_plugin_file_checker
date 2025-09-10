@@ -32,7 +32,24 @@ class GroupFileCheckerPlugin(Star):
             logger.info("未配置群聊白名单，插件将在所有群组生效。")
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
-    async def on_group_message(self, event: AstrMessageEvent):
+    async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
+        
+        # +++ 新增的调试代码 +++
+        logger.info("--- 捕获到 on_group_message 的所有参数 ---")
+        logger.info(f"1. self (插件实例): {type(self)}")
+        logger.info(f"2. event (事件对象): {type(event)}")
+        logger.info(f"3. 其他位置参数 (*args): {args}")
+        logger.info(f"4. 其他关键字参数 (**kwargs): {kwargs}")
+        
+        # 为了看得更清楚，我们打印 *args 中每个参数的类型
+        if args:
+            for i, arg in enumerate(args):
+                logger.info(f"   - args[{i}] 的值是: {arg}")
+                logger.info(f"   - args[{i}] 的类型是: {type(arg)}")
+        logger.info("------------------------------------------")
+        # +++ 调试代码结束 +++
+
+        # --- 原有代码继续执行 ---
         group_id = int(event.get_group_id())
         
         if self.group_whitelist and group_id not in self.group_whitelist:
