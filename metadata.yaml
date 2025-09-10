@@ -1,5 +1,5 @@
 name: astrbot_plugin_file_checker
-desc: 群文件失效检查
-version: 1.0
+desc: 用于QQ群文件失效检查
+version: v1.0
 author: Foolllll
 repo: https://github.com/Foolllll-J/astrbot_plugin_file_checker
