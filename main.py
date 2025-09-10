@@ -1,24 +1,76 @@
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+import asyncio
+import os
+from typing import List, Dict, Optional
+
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
+import astrbot.api.message_components as Comp
 
-@register("helloworld", "YourName", "一个简单的 Hello World 插件", "1.0.0")
-class MyPlugin(Star):
-    def __init__(self, context: Context):
+@register(
+    "astrbot_plugin_file_checker",
+    "Foolllll",
+    "群文件失效检查",
+    "1.0",
+    "https://github.com/Foolllll-J/astrbot_plugin_file_checker",
+)
+
+
+class GroupFileCheckerPlugin(Star):
+    def __init__(self, context: Context, config: Optional[Dict] = None):
         super().__init__(context)
+        self.config = config if config else {}
+        
+        # 读取白名单配置
+        self.group_whitelist: List[int] = self.config.get("group_whitelist", [])
+        self.group_whitelist = [int(gid) for gid in self.group_whitelist]
+        
+        # 初始化信号量，限制并发
+        self.download_semaphore = asyncio.Semaphore(5)
+        
+        logger.info("插件 [群文件失效检查] 已加载。")
+        
+        # 根据白名单配置打印不同的启动信息
+        if self.group_whitelist:
+            logger.info(f"已启用群聊白名单，只在以下群组生效: {self.group_whitelist}")
+        else:
+            logger.info("未配置群聊白名单，插件将在所有群组生效。")
 
-    async def initialize(self):
-        """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""
-    
-    # 注册指令的装饰器。指令名为 helloworld。注册成功后，发送 `/helloworld` 就会触发这个指令，并回复 `你好, {user_name}!`
-    @filter.command("helloworld")
-    async def helloworld(self, event: AstrMessageEvent):
-        """这是一个 hello world 指令""" # 这是 handler 的描述，将会被解析方便用户了解插件内容。建议填写。
-        user_name = event.get_sender_name()
-        message_str = event.message_str # 用户发的纯文本消息字符串
-        message_chain = event.get_messages() # 用户所发的消息的消息链 # from astrbot.api.message_components import *
-        logger.info(message_chain)
-        yield event.plain_result(f"Hello, {user_name}, 你发了 {message_str}!") # 发送一条纯文本消息
+    @filter.group
+    async def on_group_message(self, event: AstrMessageEvent):
+        # 使用白名单进行过滤
+        if self.group_whitelist and event.group_id not in self.group_whitelist:
+            return
+
+        for segment in event.message:
+            if isinstance(segment, Comp.File):
+                file_name = segment.data.get('name', '未知文件名')
+                logger.info(f"检测到群 {event.group_id} 中的文件消息: '{file_name}'，已加入处理队列。")
+                asyncio.create_task(self._handle_file_check(event.group_id, file_name, segment))
+                break
+
+    async def _handle_file_check(self, group_id: int, file_name: str, file_component: Comp.File):
+        await asyncio.sleep(30)
+        
+        async with self.download_semaphore:
+            logger.info(f"[{group_id}] 开始检查文件: '{file_name}' (获得处理许可)")
+            try:
+                local_file_path = await file_component.get_file()
+                logger.info(f"✅ [{group_id}] 文件 '{file_name}' 检查有效，已下载到: {local_file_path}")
+                try:
+                    os.remove(local_file_path)
+                    logger.info(f"[{group_id}] 临时文件 '{local_file_path}' 已被删除。")
+                except OSError as e:
+                    logger.warning(f"[{group_id}] 删除临时文件失败: {e}")
+
+            except Exception as e:
+                logger.error(f"❌ [{group_id}] 文件 '{file_name}' 经检查已失效! 框架返回错误: {e}")
+                try:
+                    failure_message = f"刚刚发送的文件「{file_name}」经检查已失效或被服务器屏蔽。"
+                    await self.context.send_group_message(group_id=group_id, message=failure_message)
+                    logger.info(f"已向群 {group_id} 发送文件失效通知。")
+                except Exception as send_e:
+                    logger.error(f"向群 {group_id} 发送失效通知时再次发生错误: {send_e}")
 
     async def terminate(self):
-        """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
+        logger.info("插件 [群文件失效检查] 已卸载。")
