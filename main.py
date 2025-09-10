@@ -40,7 +40,7 @@ class GroupFileCheckerPlugin(Star):
 
         for segment in event.get_messages():
             if isinstance(segment, Comp.File):
-                file_name = segment.data.get('name', '未知文件名')
+                file_name = segment.name
                 logger.info(f"检测到群 {group_id} 中的文件消息: '{file_name}'，已加入处理队列。")
                 asyncio.create_task(self._handle_file_check(group_id, file_name, segment))
                 break
