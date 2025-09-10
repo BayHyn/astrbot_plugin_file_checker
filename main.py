@@ -2,7 +2,7 @@ import asyncio
 import os
 from typing import List, Dict, Optional
 
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
@@ -11,7 +11,7 @@ import astrbot.api.message_components as Comp
     "astrbot_plugin_file_checker",
     "Foolllll",
     "群文件失效检查",
-    "1.0.0",
+    "1.0",
     "https://github.com/Foolllll-J/astrbot_plugin_file_checker"
 )
 class GroupFileCheckerPlugin(Star):
@@ -46,9 +46,10 @@ class GroupFileCheckerPlugin(Star):
                 break
 
     async def _handle_file_check(self, event: AstrMessageEvent, file_name: str, file_component: Comp.File):
-        await asyncio.sleep(10) # 保持您代码中的10秒延时
+        await asyncio.sleep(10)
         
         group_id = int(event.get_group_id())
+        message_id = event.message_obj.message_id
         
         async with self.download_semaphore:
             logger.info(f"[{group_id}] 开始检查文件: '{file_name or '未知文件名'}' (获得处理许可)")
@@ -62,11 +63,9 @@ class GroupFileCheckerPlugin(Star):
                 logger.info(f"✅ [{group_id}] 文件 '{file_name}' 检查有效，已下载到: {local_file_path}")
                 
                 try:
-                    success_message = f"✅ 您发送的文件「{file_name}」检查有效，可以正常下载。"
-                    # =================================================================
-                    # ↓↓↓ 这是根据文档和案例修正的最终版回复方式 ↓↓↓
-                    # =================================================================
-                    await event.send(event.plain_result(success_message))
+                    success_message = "✅ 您发送的文件检查有效，可以正常下载。"
+                    chain = MessageChain([Comp.Reply(id_=message_id), Comp.Plain(text=success_message)])
+                    await event.send(chain)
                     logger.info(f"已向群 {group_id} 回复文件有效通知。")
                 except Exception as reply_e:
                     logger.error(f"向群 {group_id} 回复有效通知时发生错误: {reply_e}")
@@ -81,11 +80,9 @@ class GroupFileCheckerPlugin(Star):
                 display_name = file_name or "未知文件"
                 logger.error(f"❌ [{group_id}] 文件 '{display_name}' 经检查已失效! 框架返回错误: {e}")
                 try:
-                    failure_message = f"刚刚发送的文件「{display_name}」经检查已失效或被服务器屏蔽。"
-                    # =================================================================
-                    # ↓↓↓ 同样修正这里的回复方式 ↓↓↓
-                    # =================================================================
-                    await event.send(event.plain_result(failure_message))
+                    failure_message = "❌ 您发送的文件经检查已失效或被服务器屏蔽。"
+                    chain = MessageChain([Comp.Reply(id_=message_id), Comp.Plain(text=failure_message)])
+                    await event.send(chain)
                     logger.info(f"已向群 {group_id} 回复文件失效通知。")
                 except Exception as send_e:
                     logger.error(f"向群 {group_id} 回复失效通知时再次发生错误: {send_e}")
