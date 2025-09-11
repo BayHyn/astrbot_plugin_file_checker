@@ -24,14 +24,17 @@ class GroupFileCheckerPlugin(Star):
         self.group_whitelist = [int(gid) for gid in self.group_whitelist]
         
         self.notify_on_success: bool = self.config.get("notify_on_success", True)
-        
         self.check_delay_seconds: int = self.config.get("check_delay_seconds", 30)
+        
+        # --- 新增: 读取文件大小限制配置，默认为 100 MB ---
+        self.max_filesize_mb: int = self.config.get("max_filesize_mb", 100)
         
         self.download_semaphore = asyncio.Semaphore(5)
         
         logger.info("插件 [群文件失效检查] 已加载。")
         logger.info(f"成功时通知: {'开启' if self.notify_on_success else '关闭'}")
         logger.info(f"检查延时: {self.check_delay_seconds} 秒")
+        logger.info(f"文件大小限制: {self.max_filesize_mb} MB (0为不限制)")
         
         if self.group_whitelist:
             logger.info(f"已启用群聊白名单，只在以下群组生效: {self.group_whitelist}")
@@ -47,6 +50,19 @@ class GroupFileCheckerPlugin(Star):
 
         for segment in event.get_messages():
             if isinstance(segment, Comp.File):
+                # --- 新增: 文件大小检查逻辑 ---
+                # Comp.File 对象通常会有一个 .size 属性，单位是字节
+                file_size_bytes = getattr(segment, 'size', 0)
+                limit_bytes = self.max_filesize_mb * 1024 * 1024
+                
+                # 检查是否需要限制大小 (配置 > 0)，以及文件大小是否超限
+                if self.max_filesize_mb > 0 and file_size_bytes > limit_bytes:
+                    file_name_for_log = segment.name or "未知文件名"
+                    logger.info(f"文件 '{file_name_for_log}' (大小: {file_size_bytes / 1024 / 1024:.2f} MB) 超过 {self.max_filesize_mb} MB 的限制，已忽略。")
+                    # 使用 continue 来跳过这个文件，继续检查消息中的下一个段
+                    continue
+                # --- 检查结束 ---
+
                 file_name = segment.name
                 logger.info(f"检测到群 {group_id} 中的文件消息: '{file_name}'，已加入处理队列。")
                 asyncio.create_task(self._handle_file_check(event, file_name, segment))
@@ -69,13 +85,14 @@ class GroupFileCheckerPlugin(Star):
                 
                 logger.info(f"✅ [{group_id}] 文件 '{file_name}' 检查有效，已下载到: {local_file_path}")
                 
-                try:
-                    success_message = "✅ 您发送的文件检查有效，可以正常下载。"
-                    chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=success_message)])
-                    await event.send(chain)
-                    logger.info(f"已向群 {group_id} 回复文件有效通知。")
-                except Exception as reply_e:
-                    logger.error(f"向群 {group_id} 回复有效通知时发生错误: {reply_e}")
+                if self.notify_on_success:
+                    try:
+                        success_message = "✅ 您发送的文件检查有效，可以正常下载。"
+                        chain = MessageChain([Comp.Reply(id=message_id), Plain(text=success_message)])
+                        await event.send(chain)
+                        logger.info(f"已向群 {group_id} 回复文件有效通知。")
+                    except Exception as reply_e:
+                        logger.error(f"向群 {group_id} 回复有效通知时发生错误: {reply_e}")
                 
                 try:
                     os.remove(local_file_path)
