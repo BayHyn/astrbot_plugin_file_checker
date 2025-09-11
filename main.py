@@ -37,6 +37,17 @@ class GroupFileCheckerPlugin(Star):
         else:
             logger.info("未配置群聊白名单，插件将在所有群组生效。")
 
+    # --- 新增: 文件大小格式化工具函数 ---
+    def _format_size(self, size_bytes: int) -> str:
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        elif size_bytes < 1024**2:
+            return f"{size_bytes/1024:.2f} KB"
+        elif size_bytes < 1024**3:
+            return f"{size_bytes/1024**2:.2f} MB"
+        else:
+            return f"{size_bytes/1024**3:.2f} GB"
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
         group_id = int(event.get_group_id())
@@ -65,36 +76,36 @@ class GroupFileCheckerPlugin(Star):
                 
                 file_size_bytes = os.path.getsize(local_file_path)
                 display_filename = os.path.basename(local_file_path)
-                
-                # --- 修正点 1: 增加文件大小的日志输出 ---
+
+                # --- 修改点: 使用新工具函数格式化文件大小 ---
                 logger.info(f"[{group_id}] >> 文件已下载到: {local_file_path}")
-                logger.info(f"[{group_id}] >> 临时文件名: {display_filename}, 文件大小: {file_size_bytes} 字节")
+                logger.info(f"[{group_id}] >> 临时文件名: {display_filename}, 文件大小: {self._format_size(file_size_bytes)}")
 
                 MINIMUM_VALID_SIZE_BYTES = 1024
                 if file_size_bytes < MINIMUM_VALID_SIZE_BYTES:
-                    raise ValueError(f"文件大小 ({file_size_bytes} B) 过小，判定为失效文件。")
+                    raise ValueError(f"文件大小 ({self._format_size(file_size_bytes)}) 过小，判定为失效文件。")
 
                 is_text_file = False
+                decoded_text = ""
+                head_content_bytes = b''
                 try:
                     with open(local_file_path, 'rb') as f:
                         head_content_bytes = f.read(1024)
                     
-                    decoded_text = ""
                     try:
-                        decoded_text = head_content_bytes.decode('utf-8')
+                        decoded_text = head_content_bytes.decode('utf-8').strip()
                         is_text_file = True
                         logger.info(f"[{group_id}] >> 文件内容可被 UTF-8 解码，识别为文本文件。")
                     except UnicodeDecodeError:
                         try:
-                            decoded_text = head_content_bytes.decode('gbk')
+                            decoded_text = head_content_bytes.decode('gbk').strip()
                             is_text_file = True
                             logger.info(f"[{group_id}] >> 文件内容可被 GBK 解码，识别为文本文件。")
                         except UnicodeDecodeError:
                             logger.info(f"[{group_id}] >> 文件内容无法被常见编码解码，识别为二进制文件。")
                     
-                    # --- 修正点 2: 只有当是文本文件时，才打印解码后的内容 ---
                     if is_text_file:
-                        logger.info(f"[{group_id}] >> 文件头部内容 (解码后): {decoded_text}")
+                        logger.info(f"[{group_id}] >> 文件头部内容 (解码后): {decoded_text[:200]}...") # 日志中也只打一部分
                 
                 except Exception as read_e:
                     logger.error(f"[{group_id}] >> 读取文件内容时失败: {read_e}")
@@ -106,8 +117,16 @@ class GroupFileCheckerPlugin(Star):
                 
                 if self.notify_on_success:
                     try:
-                        file_type_desc = "文本文件" if is_text_file else "文件"
-                        success_message = f"✅ 您发送的{file_type_desc}「{file_name}」检查有效，可以正常下载。"
+                        # --- 修改点: 构建新的、带预览的回复消息 ---
+                        success_message = "✅ 您发送的文件检查有效，可以正常下载。"
+                        if is_text_file and decoded_text:
+                            # 截取前200个字符作为预览
+                            preview_text = decoded_text[:200]
+                            success_message += f"\n格式为TXT，以下是预览：\n{preview_text}"
+                            # 如果预览内容被截断，则在末尾加上省略号
+                            if len(decoded_text) > 200:
+                                success_message += "..."
+                        
                         chain = MessageChain([Reply(id=message_id), Plain(text=success_message)])
                         await event.send(chain)
                         logger.info(f"已向群 {group_id} 回复文件有效通知。")
