@@ -2,7 +2,7 @@ import asyncio
 import os
 from typing import List, Dict, Optional
 
-# 导入 chardet 库
+# 导入 chardet 库，如果您的环境没有，请先执行 pip install chardet
 import chardet
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
@@ -88,19 +88,17 @@ class GroupFileCheckerPlugin(Star):
 
                 is_text_file = False
                 decoded_text = ""
+                encoding = "未知"
                 try:
                     with open(local_file_path, 'rb') as f:
-                        head_content_bytes = f.read(2048) # 读取更多字节以便 chardet 分析
+                        head_content_bytes = f.read(2048)
                     
-                    # --- 使用 chardet 智能识别编码 ---
                     detection_result = chardet.detect(head_content_bytes)
                     encoding = detection_result['encoding']
                     confidence = detection_result['confidence']
                     
-                    # 如果 chardet 有超过 80% 的把握认为这是一个文本文件
                     if encoding and confidence > 0.8:
                         is_text_file = True
-                        # 使用 chardet 识别出的编码进行解码
                         decoded_text = head_content_bytes.decode(encoding, errors='ignore').strip()
                         logger.info(f"[{group_id}] >> chardet 识别编码为: {encoding} (置信度: {confidence:.0%})，识别为文本文件。")
                         logger.info(f"[{group_id}] >> 文件头部内容 (解码后): {decoded_text[:200]}...")
@@ -117,11 +115,11 @@ class GroupFileCheckerPlugin(Star):
                 
                 if self.notify_on_success:
                     try:
-                        file_type_desc = "文本文件" if is_text_file else "文件"
-                        success_message = f"✅ 您发送的{file_type_desc}「{file_name}」检查有效，可以正常下载。"
+                        # --- 修改点: 移除了文件名，优化了回复格式 ---
+                        success_message = "✅ 您发送的文件检查有效，可以正常下载。"
                         if is_text_file and decoded_text:
                             preview_text = decoded_text[:200]
-                            success_message += f"\n格式为 {encoding}，以下是预览：\n{preview_text}"
+                            success_message += f"\n格式为TXT，以下是预览：\n{preview_text}"
                             if len(decoded_text) > 200:
                                 success_message += "..."
                         
@@ -132,10 +130,10 @@ class GroupFileCheckerPlugin(Star):
                         logger.error(f"向群 {group_id} 回复有效通知时发生错误: {reply_e}")
                 
             except Exception as e:
-                display_name_for_error = file_name or (display_filename if 'display_filename' in locals() else "未知文件")
-                logger.error(f"❌ [{group_id}] 文件 '{display_name_for_error}' 经检查已失效! 原因: {e}")
+                logger.error(f"❌ [{group_id}] 文件经检查已失效! 原因: {e}")
                 try:
-                    failure_message = f"❌ 您发送的文件「{display_name_for_error}」经检查已失效或被服务器屏蔽。"
+                    # --- 修改点: 移除了文件名 ---
+                    failure_message = "❌ 您发送的文件经检查已失效或被服务器屏蔽。"
                     chain = MessageChain([Reply(id=message_id), Plain(text=failure_message)])
                     await event.send(chain)
                     logger.info(f"已向群 {group_id} 回复文件失效通知。")
