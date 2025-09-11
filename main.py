@@ -5,14 +5,14 @@ from typing import List, Dict, Optional
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
-# --- 修正点: 统一使用 Comp 前缀 ---
+# --- 修正点: 只保留这一种导入方式 ---
 import astrbot.api.message_components as Comp
 
 @register(
     "astrbot_plugin_file_checker",
     "Foolllll",
     "群文件失效检查",
-    "1.0.0",
+    "1.0",
     "https://github.com/Foolllll-J/astrbot_plugin_file_checker"
 )
 class GroupFileCheckerPlugin(Star):
@@ -25,14 +25,12 @@ class GroupFileCheckerPlugin(Star):
         
         self.notify_on_success: bool = self.config.get("notify_on_success", True)
         self.check_delay_seconds: int = self.config.get("check_delay_seconds", 30)
-        self.max_filesize_mb: int = self.config.get("max_filesize_mb", 100)
         
         self.download_semaphore = asyncio.Semaphore(5)
         
         logger.info("插件 [群文件失效检查] 已加载。")
         logger.info(f"成功时通知: {'开启' if self.notify_on_success else '关闭'}")
         logger.info(f"检查延时: {self.check_delay_seconds} 秒")
-        logger.info(f"文件大小限制: {self.max_filesize_mb} MB (0为不限制)")
         
         if self.group_whitelist:
             logger.info(f"已启用群聊白名单，只在以下群组生效: {self.group_whitelist}")
@@ -65,37 +63,37 @@ class GroupFileCheckerPlugin(Star):
             try:
                 local_file_path = await file_component.get_file()
                 
-                file_size_bytes = os.path.getsize(local_file_path)
-                actual_filename = os.path.basename(local_file_path)
-
-                logger.info(f"[{group_id}] >> 文件已下载到本地: {local_file_path}")
-                logger.info(f"[{group_id}] >> 实际文件名: {actual_filename}, 文件大小: {file_size_bytes} 字节")
+                is_text_file = False
                 try:
                     with open(local_file_path, 'rb') as f:
-                        head_content = f.read(200)
-                        logger.info(f"[{group_id}] >> 文件头部内容 (前200字节): {head_content!r}")
+                        head_content = f.read(1024)
+                        head_content.decode('utf-8')
+                        is_text_file = True
+                        logger.info(f"[{group_id}] >> 文件内容可被UTF-8解码，识别为文本文件。")
+                        logger.info(f"[{group_id}] >> 文件头部内容 (前1024字节): {head_content!r}")
+                except UnicodeDecodeError:
+                    logger.info(f"[{group_id}] >> 文件内容无法被UTF-8解码，识别为非文本（二进制）文件，根据规则跳过检查。")
+                    return 
                 except Exception as read_e:
                     logger.error(f"[{group_id}] >> 读取文件头部内容失败: {read_e}")
-
-                limit_bytes = self.max_filesize_mb * 1024 * 1024
-                if self.max_filesize_mb > 0 and file_size_bytes > limit_bytes:
-                    logger.info(f"文件 '{file_name or actual_filename}' (大小: {file_size_bytes / 1024 / 1024:.2f} MB) 超过 {self.max_filesize_mb} MB 的限制，检查终止。")
                     return 
                 
+                file_size_bytes = os.path.getsize(local_file_path)
+                display_filename = os.path.basename(local_file_path)
+
                 MINIMUM_VALID_SIZE_BYTES = 1024
                 if file_size_bytes < MINIMUM_VALID_SIZE_BYTES:
                     raise ValueError(f"文件大小 ({file_size_bytes} B) 过小，判定为失效文件。")
                 
                 if not file_name:
-                    file_name = actual_filename
-                    logger.info(f"[{group_id}] 未能获取到原始文件名，使用临时文件名: {file_name}")
+                    file_name = display_filename
                 
                 logger.info(f"✅ [{group_id}] 文件 '{file_name}' 检查有效。")
                 
                 if self.notify_on_success:
                     try:
-                        success_message = "✅ 您发送的文件检查有效，可以正常下载。"
-                        # --- 修正点: 使用 Comp.Reply 和 Comp.Plain ---
+                        success_message = f"✅ 您发送的文本文件「{file_name}」检查有效，可以正常下载。"
+                        # --- 修正点: 统一使用 Comp. 前缀 ---
                         chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=success_message)])
                         await event.send(chain)
                         logger.info(f"已向群 {group_id} 回复文件有效通知。")
@@ -103,11 +101,11 @@ class GroupFileCheckerPlugin(Star):
                         logger.error(f"向群 {group_id} 回复有效通知时发生错误: {reply_e}")
                 
             except Exception as e:
-                display_name = file_name or "未知文件"
-                logger.error(f"❌ [{group_id}] 文件 '{display_name}' 经检查已失效! 原因: {e}")
+                display_name_for_error = file_name or (display_filename if 'display_filename' in locals() else "未知文件")
+                logger.error(f"❌ [{group_id}] 文件 '{display_name_for_error}' 经检查已失效! 原因: {e}")
                 try:
-                    failure_message = "❌ 您发送的文件经检查已失效或被服务器屏蔽。"
-                    # --- 修正点: 使用 Comp.Reply 和 Comp.Plain ---
+                    failure_message = f"❌ 您发送的文本文件「{display_name_for_error}」经检查已失效或被服务器屏蔽。"
+                    # --- 修正点: 统一使用 Comp. 前缀 ---
                     chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=failure_message)])
                     await event.send(chain)
                     logger.info(f"已向群 {group_id} 回复文件失效通知。")
