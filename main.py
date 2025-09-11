@@ -2,7 +2,6 @@ import asyncio
 import os
 from typing import List, Dict, Optional
 
-# 导入 chardet 库，如果您的环境没有，请先执行 pip install chardet
 import chardet
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
@@ -142,12 +141,10 @@ class GroupFileCheckerPlugin(Star):
             try:
                 local_file_path = await file_component.get_file()
                 
-                # --- 新增: 补全阶段二的详细日志 ---
                 file_size_bytes = os.path.getsize(local_file_path)
                 display_filename = os.path.basename(local_file_path)
                 logger.info(f"[{group_id}] [阶段二] >> 文件已下载到: {local_file_path}")
                 logger.info(f"[{group_id}] [阶段二] >> 临时文件名: {display_filename}, 文件大小: {self._format_size(file_size_bytes)}")
-                # --- 日志补全结束 ---
 
                 MINIMUM_VALID_SIZE_BYTES = 1024
                 if file_size_bytes < MINIMUM_VALID_SIZE_BYTES:
