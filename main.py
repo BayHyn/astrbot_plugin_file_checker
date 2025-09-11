@@ -121,4 +121,17 @@ class GroupFileCheckerPlugin(Star):
                     failure_message = f"❌ 您发送的文件「{display_name_for_error}」经检查已失效或被服务器屏蔽。"
                     chain = MessageChain([Reply(id=message_id), Plain(text=failure_message)])
                     await event.send(chain)
-                    logger.info(f"已向群 {group_id} 回复文件
+                    logger.info(f"已向群 {group_id} 回复文件失效通知。")
+                except Exception as send_e:
+                    logger.error(f"向群 {group_id} 回复失效通知时再次发生错误: {send_e}")
+            
+            finally:
+                if local_file_path and os.path.exists(local_file_path):
+                    try:
+                        os.remove(local_file_path)
+                        logger.info(f"[{group_id}] 临时文件 '{local_file_path}' 已被删除。")
+                    except OSError as e:
+                        logger.warning(f"[{group_id}] 删除临时文件失败: {e}")
+
+    async def terminate(self):
+        logger.info("插件 [群文件失效检查] 已卸载。")
