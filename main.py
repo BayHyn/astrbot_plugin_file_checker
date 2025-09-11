@@ -115,15 +115,15 @@ class GroupFileCheckerPlugin(Star):
                 
                 if self.notify_on_success:
                     try:
-                        # --- 修改点: 移除了文件名，优化了回复格式 ---
                         success_message = "✅ 您发送的文件检查有效，可以正常下载。"
                         if is_text_file and decoded_text:
                             preview_text = decoded_text[:200]
-                            success_message += f"\n格式为TXT，以下是预览：\n{preview_text}"
+                            # --- 修改点: 将“格式为TXT”改回显示识别出的编码 ---
+                            success_message += f"\n格式为 {encoding}，以下是预览：\n{preview_text}"
                             if len(decoded_text) > 200:
                                 success_message += "..."
                         
-                        chain = MessageChain([Reply(id=message_id), Plain(text=success_message)])
+                        chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=success_message)])
                         await event.send(chain)
                         logger.info(f"已向群 {group_id} 回复文件有效通知。")
                     except Exception as reply_e:
@@ -132,9 +132,8 @@ class GroupFileCheckerPlugin(Star):
             except Exception as e:
                 logger.error(f"❌ [{group_id}] 文件经检查已失效! 原因: {e}")
                 try:
-                    # --- 修改点: 移除了文件名 ---
                     failure_message = "❌ 您发送的文件经检查已失效或被服务器屏蔽。"
-                    chain = MessageChain([Reply(id=message_id), Plain(text=failure_message)])
+                    chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=failure_message)])
                     await event.send(chain)
                     logger.info(f"已向群 {group_id} 回复文件失效通知。")
                 except Exception as send_e:
