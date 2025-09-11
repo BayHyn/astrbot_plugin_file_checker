@@ -5,8 +5,8 @@ from typing import List, Dict, Optional
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
-# --- 修正点: 只保留这一种导入方式 ---
 import astrbot.api.message_components as Comp
+from astrbot.api.message_components import Reply, Plain
 
 @register(
     "astrbot_plugin_file_checker",
@@ -63,16 +63,19 @@ class GroupFileCheckerPlugin(Star):
             try:
                 local_file_path = await file_component.get_file()
                 
-                is_text_file = False
+                # --- 核心过滤与识别逻辑 ---
                 try:
                     with open(local_file_path, 'rb') as f:
                         head_content = f.read(1024)
                         head_content.decode('utf-8')
-                        is_text_file = True
+                        
                         logger.info(f"[{group_id}] >> 文件内容可被UTF-8解码，识别为文本文件。")
+                        
+                        # --- 新增：打印文本文件的头部内容 ---
                         logger.info(f"[{group_id}] >> 文件头部内容 (前1024字节): {head_content!r}")
+                        
                 except UnicodeDecodeError:
-                    logger.info(f"[{group_id}] >> 文件内容无法被UTF-8解码，识别为非文本（二进制）文件，根据规则跳过检查。")
+                    logger.info(f"[{group_id}] >> 文件内容无法被UTF-8解码，识别为非文本文件，根据规则跳过检查。")
                     return 
                 except Exception as read_e:
                     logger.error(f"[{group_id}] >> 读取文件头部内容失败: {read_e}")
@@ -93,8 +96,7 @@ class GroupFileCheckerPlugin(Star):
                 if self.notify_on_success:
                     try:
                         success_message = f"✅ 您发送的文本文件「{file_name}」检查有效，可以正常下载。"
-                        # --- 修正点: 统一使用 Comp. 前缀 ---
-                        chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=success_message)])
+                        chain = MessageChain([Reply(id=message_id), Plain(text=success_message)])
                         await event.send(chain)
                         logger.info(f"已向群 {group_id} 回复文件有效通知。")
                     except Exception as reply_e:
@@ -105,8 +107,7 @@ class GroupFileCheckerPlugin(Star):
                 logger.error(f"❌ [{group_id}] 文件 '{display_name_for_error}' 经检查已失效! 原因: {e}")
                 try:
                     failure_message = f"❌ 您发送的文本文件「{display_name_for_error}」经检查已失效或被服务器屏蔽。"
-                    # --- 修正点: 统一使用 Comp. 前缀 ---
-                    chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=failure_message)])
+                    chain = MessageChain([Reply(id=message_id), Plain(text=failure_message)])
                     await event.send(chain)
                     logger.info(f"已向群 {group_id} 回复文件失效通知。")
                 except Exception as send_e:
