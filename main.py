@@ -63,30 +63,41 @@ class GroupFileCheckerPlugin(Star):
             try:
                 local_file_path = await file_component.get_file()
                 
-                # --- 核心过滤与识别逻辑 ---
-                try:
-                    with open(local_file_path, 'rb') as f:
-                        head_content = f.read(1024)
-                        head_content.decode('utf-8')
-                        
-                        logger.info(f"[{group_id}] >> 文件内容可被UTF-8解码，识别为文本文件。")
-                        
-                        # --- 新增：打印文本文件的头部内容 ---
-                        logger.info(f"[{group_id}] >> 文件头部内容 (前1024字节): {head_content!r}")
-                        
-                except UnicodeDecodeError:
-                    logger.info(f"[{group_id}] >> 文件内容无法被UTF-8解码，识别为非文本文件，根据规则跳过检查。")
-                    return 
-                except Exception as read_e:
-                    logger.error(f"[{group_id}] >> 读取文件头部内容失败: {read_e}")
-                    return 
-                
                 file_size_bytes = os.path.getsize(local_file_path)
                 display_filename = os.path.basename(local_file_path)
+                
+                # --- 修正点 1: 增加文件大小的日志输出 ---
+                logger.info(f"[{group_id}] >> 文件已下载到: {local_file_path}")
+                logger.info(f"[{group_id}] >> 临时文件名: {display_filename}, 文件大小: {file_size_bytes} 字节")
 
                 MINIMUM_VALID_SIZE_BYTES = 1024
                 if file_size_bytes < MINIMUM_VALID_SIZE_BYTES:
                     raise ValueError(f"文件大小 ({file_size_bytes} B) 过小，判定为失效文件。")
+
+                is_text_file = False
+                try:
+                    with open(local_file_path, 'rb') as f:
+                        head_content_bytes = f.read(1024)
+                    
+                    decoded_text = ""
+                    try:
+                        decoded_text = head_content_bytes.decode('utf-8')
+                        is_text_file = True
+                        logger.info(f"[{group_id}] >> 文件内容可被 UTF-8 解码，识别为文本文件。")
+                    except UnicodeDecodeError:
+                        try:
+                            decoded_text = head_content_bytes.decode('gbk')
+                            is_text_file = True
+                            logger.info(f"[{group_id}] >> 文件内容可被 GBK 解码，识别为文本文件。")
+                        except UnicodeDecodeError:
+                            logger.info(f"[{group_id}] >> 文件内容无法被常见编码解码，识别为二进制文件。")
+                    
+                    # --- 修正点 2: 只有当是文本文件时，才打印解码后的内容 ---
+                    if is_text_file:
+                        logger.info(f"[{group_id}] >> 文件头部内容 (解码后): {decoded_text}")
+                
+                except Exception as read_e:
+                    logger.error(f"[{group_id}] >> 读取文件内容时失败: {read_e}")
                 
                 if not file_name:
                     file_name = display_filename
@@ -95,7 +106,8 @@ class GroupFileCheckerPlugin(Star):
                 
                 if self.notify_on_success:
                     try:
-                        success_message = f"✅ 您发送的文本文件「{file_name}」检查有效，可以正常下载。"
+                        file_type_desc = "文本文件" if is_text_file else "文件"
+                        success_message = f"✅ 您发送的{file_type_desc}「{file_name}」检查有效，可以正常下载。"
                         chain = MessageChain([Reply(id=message_id), Plain(text=success_message)])
                         await event.send(chain)
                         logger.info(f"已向群 {group_id} 回复文件有效通知。")
@@ -106,20 +118,7 @@ class GroupFileCheckerPlugin(Star):
                 display_name_for_error = file_name or (display_filename if 'display_filename' in locals() else "未知文件")
                 logger.error(f"❌ [{group_id}] 文件 '{display_name_for_error}' 经检查已失效! 原因: {e}")
                 try:
-                    failure_message = f"❌ 您发送的文本文件「{display_name_for_error}」经检查已失效或被服务器屏蔽。"
+                    failure_message = f"❌ 您发送的文件「{display_name_for_error}」经检查已失效或被服务器屏蔽。"
                     chain = MessageChain([Reply(id=message_id), Plain(text=failure_message)])
                     await event.send(chain)
-                    logger.info(f"已向群 {group_id} 回复文件失效通知。")
-                except Exception as send_e:
-                    logger.error(f"向群 {group_id} 回复失效通知时再次发生错误: {send_e}")
-            
-            finally:
-                if local_file_path and os.path.exists(local_file_path):
-                    try:
-                        os.remove(local_file_path)
-                        logger.info(f"[{group_id}] 临时文件 '{local_file_path}' 已被删除。")
-                    except OSError as e:
-                        logger.warning(f"[{group_id}] 删除临时文件失败: {e}")
-
-    async def terminate(self):
-        logger.info("插件 [群文件失效检查] 已卸载。")
+                    logger.info(f"已向群 {group_id} 回复文件
