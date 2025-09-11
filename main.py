@@ -31,7 +31,7 @@ class GroupFileCheckerPlugin(Star):
         
         self.download_semaphore = asyncio.Semaphore(5)
         
-        logger.info("插件 [群文件失效检查] 已加载 (依赖式复核模式)。")
+        logger.info("插件 [群文件失效检查] 已加载。")
         logger.info(f"成功时通知: {'开启' if self.notify_on_success else '关闭'}")
         logger.info(f"复核延时: {self.check_delay_seconds} 秒")
         
@@ -55,22 +55,12 @@ class GroupFileCheckerPlugin(Star):
         for segment in event.get_messages():
             if isinstance(segment, Comp.File):
                 file_name = segment.name
-                logger.info(f"检测到群 {group_id} 中的文件消息: '{file_name}'，启动即时检查。")
-                
-                # --- 修改点: 等待阶段一完成，并根据结果决定是否启动阶段二 ---
-                # 我们不再直接创建两个任务，而是先执行阶段一
-                is_initially_valid = await self._task_immediate_preview(event, file_name, segment)
-                
-                # 只有当第一阶段检查成功时，才创建第二阶段的延时复核任务
-                if is_initially_valid:
-                    logger.info(f"[{group_id}] 初步检查通过，已加入延时复核队列。")
-                    asyncio.create_task(self._task_delayed_recheck(event, file_name, segment))
-                else:
-                    logger.info(f"[{group_id}] 初步检查失败，不进行延时复核。")
+                logger.info(f"检测到群 {group_id} 中的文件消息: '{file_name}'，启动两阶段检查任务。")
+                asyncio.create_task(self._task_immediate_preview(event, file_name, segment))
+                asyncio.create_task(self._task_delayed_recheck(event, file_name, segment))
                 break
 
     async def _task_immediate_preview(self, event: AstrMessageEvent, file_name: str, file_component: Comp.File) -> bool:
-        """第一阶段：立即下载并回复初步检查结果。成功返回True，失败返回False。"""
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
         local_file_path = None
@@ -108,7 +98,7 @@ class GroupFileCheckerPlugin(Star):
                     await event.send(chain)
                     logger.info(f"[{group_id}] [阶段一] 已发送初步检查有效通知。")
                 
-                return True # 检查成功，返回 True
+                return True
 
             except Exception as e:
                 logger.error(f"❌ [{group_id}] [阶段一] 文件即时检查已失效! 原因: {e}")
@@ -120,14 +110,13 @@ class GroupFileCheckerPlugin(Star):
                 except Exception as send_e:
                     logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}")
                 
-                return False # 检查失败，返回 False
+                return False
             finally:
                 if local_file_path and os.path.exists(local_file_path):
                     try: os.remove(local_file_path)
                     except OSError as e: logger.warning(f"[{group_id}] [阶段一] 删除临时文件失败: {e}")
 
     def _identify_text_file(self, file_path: str) -> tuple[bool, str, str]:
-        """一个辅助函数，用于识别文件是否为文本并返回结果。"""
         try:
             with open(file_path, 'rb') as f:
                 head_content_bytes = f.read(2048)
@@ -142,7 +131,6 @@ class GroupFileCheckerPlugin(Star):
         return False, "", "未知"
 
     async def _task_delayed_recheck(self, event: AstrMessageEvent, file_name: str, file_component: Comp.File):
-        """第二阶段：延时复核文件是否依然有效（只在失败时通知）。"""
         await asyncio.sleep(self.check_delay_seconds)
         
         group_id = int(event.get_group_id())
@@ -154,7 +142,13 @@ class GroupFileCheckerPlugin(Star):
             try:
                 local_file_path = await file_component.get_file()
                 
+                # --- 新增: 补全阶段二的详细日志 ---
                 file_size_bytes = os.path.getsize(local_file_path)
+                display_filename = os.path.basename(local_file_path)
+                logger.info(f"[{group_id}] [阶段二] >> 文件已下载到: {local_file_path}")
+                logger.info(f"[{group_id}] [阶段二] >> 临时文件名: {display_filename}, 文件大小: {self._format_size(file_size_bytes)}")
+                # --- 日志补全结束 ---
+
                 MINIMUM_VALID_SIZE_BYTES = 1024
                 if file_size_bytes < MINIMUM_VALID_SIZE_BYTES:
                     raise ValueError(f"文件大小 ({self._format_size(file_size_bytes)}) 过小，判定为失效文件。")
