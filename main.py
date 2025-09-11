@@ -2,6 +2,9 @@ import asyncio
 import os
 from typing import List, Dict, Optional
 
+# 导入 chardet 库
+import chardet
+
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
@@ -37,7 +40,6 @@ class GroupFileCheckerPlugin(Star):
         else:
             logger.info("未配置群聊白名单，插件将在所有群组生效。")
 
-    # --- 新增: 文件大小格式化工具函数 ---
     def _format_size(self, size_bytes: int) -> str:
         if size_bytes < 1024:
             return f"{size_bytes} B"
@@ -76,8 +78,7 @@ class GroupFileCheckerPlugin(Star):
                 
                 file_size_bytes = os.path.getsize(local_file_path)
                 display_filename = os.path.basename(local_file_path)
-
-                # --- 修改点: 使用新工具函数格式化文件大小 ---
+                
                 logger.info(f"[{group_id}] >> 文件已下载到: {local_file_path}")
                 logger.info(f"[{group_id}] >> 临时文件名: {display_filename}, 文件大小: {self._format_size(file_size_bytes)}")
 
@@ -87,28 +88,27 @@ class GroupFileCheckerPlugin(Star):
 
                 is_text_file = False
                 decoded_text = ""
-                head_content_bytes = b''
                 try:
                     with open(local_file_path, 'rb') as f:
-                        head_content_bytes = f.read(1024)
+                        head_content_bytes = f.read(2048) # 读取更多字节以便 chardet 分析
                     
-                    try:
-                        decoded_text = head_content_bytes.decode('utf-8').strip()
+                    # --- 使用 chardet 智能识别编码 ---
+                    detection_result = chardet.detect(head_content_bytes)
+                    encoding = detection_result['encoding']
+                    confidence = detection_result['confidence']
+                    
+                    # 如果 chardet 有超过 80% 的把握认为这是一个文本文件
+                    if encoding and confidence > 0.8:
                         is_text_file = True
-                        logger.info(f"[{group_id}] >> 文件内容可被 UTF-8 解码，识别为文本文件。")
-                    except UnicodeDecodeError:
-                        try:
-                            decoded_text = head_content_bytes.decode('gbk').strip()
-                            is_text_file = True
-                            logger.info(f"[{group_id}] >> 文件内容可被 GBK 解码，识别为文本文件。")
-                        except UnicodeDecodeError:
-                            logger.info(f"[{group_id}] >> 文件内容无法被常见编码解码，识别为二进制文件。")
-                    
-                    if is_text_file:
-                        logger.info(f"[{group_id}] >> 文件头部内容 (解码后): {decoded_text[:200]}...") # 日志中也只打一部分
-                
+                        # 使用 chardet 识别出的编码进行解码
+                        decoded_text = head_content_bytes.decode(encoding, errors='ignore').strip()
+                        logger.info(f"[{group_id}] >> chardet 识别编码为: {encoding} (置信度: {confidence:.0%})，识别为文本文件。")
+                        logger.info(f"[{group_id}] >> 文件头部内容 (解码后): {decoded_text[:200]}...")
+                    else:
+                        logger.info(f"[{group_id}] >> chardet 识别为未知或低置信度编码 ({encoding}, {confidence:.0%})，识别为二进制文件。")
+
                 except Exception as read_e:
-                    logger.error(f"[{group_id}] >> 读取文件内容时失败: {read_e}")
+                    logger.error(f"[{group_id}] >> 读取或识别文件内容时失败: {read_e}")
                 
                 if not file_name:
                     file_name = display_filename
@@ -117,13 +117,11 @@ class GroupFileCheckerPlugin(Star):
                 
                 if self.notify_on_success:
                     try:
-                        # --- 修改点: 构建新的、带预览的回复消息 ---
-                        success_message = "✅ 您发送的文件检查有效，可以正常下载。"
+                        file_type_desc = "文本文件" if is_text_file else "文件"
+                        success_message = f"✅ 您发送的{file_type_desc}「{file_name}」检查有效，可以正常下载。"
                         if is_text_file and decoded_text:
-                            # 截取前200个字符作为预览
                             preview_text = decoded_text[:200]
-                            success_message += f"\n格式为TXT，以下是预览：\n{preview_text}"
-                            # 如果预览内容被截断，则在末尾加上省略号
+                            success_message += f"\n格式为 {encoding}，以下是预览：\n{preview_text}"
                             if len(decoded_text) > 200:
                                 success_message += "..."
                         
