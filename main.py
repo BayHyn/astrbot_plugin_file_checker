@@ -18,19 +18,32 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import Aioc
     "astrbot_plugin_file_checker",
     "Foolllll",
     "群文件失效检查",
-    "1.0.0",
+    "1.1", # 已更新版本号
     "https://github.com/Foolllll-J/astrbot_plugin_file_checker"
 )
 class GroupFileCheckerPlugin(Star):
     def __init__(self, context: Context, config: Optional[Dict] = None):
         super().__init__(context)
         self.config = config if config else {}
+        
         self.group_whitelist: List[int] = self.config.get("group_whitelist", [])
         self.group_whitelist = [int(gid) for gid in self.group_whitelist]
         self.notify_on_success: bool = self.config.get("notify_on_success", True)
+        
+        # --- 新增: 读取阶段一的延时配置 ---
+        self.pre_check_delay_seconds: int = self.config.get("pre_check_delay_seconds", 10)
+        
         self.check_delay_seconds: int = self.config.get("check_delay_seconds", 30)
         self.download_semaphore = asyncio.Semaphore(5)
+
         logger.info("插件 [群文件失效检查] 已加载 (综合诊断版)。")
+        logger.info(f"成功时通知: {'开启' if self.notify_on_success else '关闭'}")
+        logger.info(f"阶段一延时: {self.pre_check_delay_seconds} 秒")
+        logger.info(f"阶段二延时: {self.check_delay_seconds} 秒")
+        if self.group_whitelist:
+            logger.info(f"已启用群聊白名单，只在以下群组生效: {self.group_whitelist}")
+        else:
+            logger.info("未配置群聊白名单，插件将在所有群组生效。")
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
@@ -48,28 +61,24 @@ class GroupFileCheckerPlugin(Star):
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
         
-        # --- 修改点: 阶段一开始前，等待10秒 ---
-        await asyncio.sleep(10)
+        # --- 修改点: 使用可配置的延时时间 ---
+        await asyncio.sleep(self.pre_check_delay_seconds)
         
         logger.info(f"[{group_id}] [阶段一] 开始即时检查...")
         
-        # --- 修改点: 并行执行两种检查 ---
         # 任务A: 通过群文件系统API检查公共有效性
         gfs_check_task = asyncio.create_task(self._check_validity_via_gfs(event))
         # 任务B: 通过文件消息下载内容用于预览
         preview_task = asyncio.create_task(self._get_text_preview(file_component))
 
-        # 等待两个任务都完成
         gfs_check_result = await gfs_check_task
         preview_text, encoding, is_text = await preview_task
         
-        # 根据两个任务的结果，决定最终的回复和操作
         is_gfs_valid = gfs_check_result["is_valid"]
         matched_file = gfs_check_result.get("matched_file")
         file_name = matched_file.get('file_name', '未知文件名') if matched_file else "未知文件名"
         
         if is_gfs_valid:
-            # 公共检查通过，这是最理想的情况
             if self.notify_on_success:
                 success_message = "✅ 您发送的文件初步检查有效。"
                 if is_text and preview_text:
@@ -84,13 +93,11 @@ class GroupFileCheckerPlugin(Star):
                 except Exception as e:
                     logger.error(f"[{group_id}] [阶段一] 回复成功通知时出错: {e}")
 
-            # 启动阶段二延时复核
             file_id = matched_file.get('file_id')
             logger.info(f"[{group_id}] 初步检查通过，已加入延时复核队列。")
             asyncio.create_task(self._task_delayed_recheck(event, file_name, file_id))
 
         else:
-            # 公共检查失败，但我们可能依然能获取到内容
             logger.error(f"❌ [{group_id}] [阶段一] 文件即时检查已失效! 原因: {gfs_check_result['reason']}")
             try:
                 failure_message = "⚠️ 您发送的文件已失效。"
@@ -104,23 +111,24 @@ class GroupFileCheckerPlugin(Star):
                 logger.info(f"[{group_id}] [阶段一] 已发送综合诊断失效通知。")
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}")
-            # 公共检查失败，不启动阶段二复核
             logger.info(f"[{group_id}] 初步检查失败，不进行延时复核。")
 
 
     async def _check_validity_via_gfs(self, event: AstrMessageEvent) -> dict:
         group_id = int(event.get_group_id())
-        received_timestamp = time.time() - 10 # 减去我们等待的10秒
+        # 使用配置的延时来反推接收时间
+        received_timestamp = time.time() - self.pre_check_delay_seconds
         
         try:
             assert isinstance(event, AiocqhttpMessageEvent)
             client = event.bot
+            
             api_result = await client.api.call_action('get_group_root_files', group_id=group_id)
             if not api_result or 'files' not in api_result:
                 return {"is_valid": False, "reason": "获取群文件列表失败"}
 
             matched_file = None
-            time_tolerance_seconds = 5
+            time_tolerance_seconds = 3
             for file_info in api_result['files']:
                 if abs(file_info.get('modify_time', 0) - received_timestamp) < time_tolerance_seconds:
                     matched_file = file_info
