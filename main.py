@@ -4,7 +4,6 @@ from typing import List, Dict, Optional
 import datetime
 import time
 
-# 导入 chardet 库，如果您的环境没有，请先执行 pip install chardet
 import chardet
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
@@ -18,7 +17,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import Aioc
     "astrbot_plugin_file_checker",
     "Foolllll",
     "群文件失效检查",
-    "1.1", # 已更新版本号
+    "1.1",
     "https://github.com/Foolllll-J/astrbot_plugin_file_checker"
 )
 class GroupFileCheckerPlugin(Star):
@@ -29,17 +28,18 @@ class GroupFileCheckerPlugin(Star):
         self.group_whitelist: List[int] = self.config.get("group_whitelist", [])
         self.group_whitelist = [int(gid) for gid in self.group_whitelist]
         self.notify_on_success: bool = self.config.get("notify_on_success", True)
-        
-        # --- 新增: 读取阶段一的延时配置 ---
         self.pre_check_delay_seconds: int = self.config.get("pre_check_delay_seconds", 10)
-        
         self.check_delay_seconds: int = self.config.get("check_delay_seconds", 30)
-        self.download_semaphore = asyncio.Semaphore(5)
 
+        self.preview_length: int = self.config.get("preview_length", 200)
+        
+        self.download_semaphore = asyncio.Semaphore(5)
+        
         logger.info("插件 [群文件失效检查] 已加载 (综合诊断版)。")
         logger.info(f"成功时通知: {'开启' if self.notify_on_success else '关闭'}")
         logger.info(f"阶段一延时: {self.pre_check_delay_seconds} 秒")
         logger.info(f"阶段二延时: {self.check_delay_seconds} 秒")
+        logger.info(f"预览长度: {self.preview_length} 字符")
         if self.group_whitelist:
             logger.info(f"已启用群聊白名单，只在以下群组生效: {self.group_whitelist}")
         else:
@@ -61,14 +61,11 @@ class GroupFileCheckerPlugin(Star):
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
         
-        # --- 修改点: 使用可配置的延时时间 ---
         await asyncio.sleep(self.pre_check_delay_seconds)
         
         logger.info(f"[{group_id}] [阶段一] 开始即时检查...")
         
-        # 任务A: 通过群文件系统API检查公共有效性
         gfs_check_task = asyncio.create_task(self._check_validity_via_gfs(event))
-        # 任务B: 通过文件消息下载内容用于预览
         preview_task = asyncio.create_task(self._get_text_preview(file_component))
 
         gfs_check_result = await gfs_check_task
@@ -82,9 +79,10 @@ class GroupFileCheckerPlugin(Star):
             if self.notify_on_success:
                 success_message = "✅ 您发送的文件初步检查有效。"
                 if is_text and preview_text:
-                    preview_text_short = preview_text[:200]
+                    # --- 修改点: 使用可配置的预览长度 ---
+                    preview_text_short = preview_text[:self.preview_length]
                     success_message += f"\n格式为 {encoding}，以下是预览：\n{preview_text_short}"
-                    if len(preview_text) > 200: success_message += "..."
+                    if len(preview_text) > self.preview_length: success_message += "..."
                 
                 try:
                     chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=success_message)])
@@ -102,9 +100,9 @@ class GroupFileCheckerPlugin(Star):
             try:
                 failure_message = "⚠️ 您发送的文件已失效。"
                 if is_text and preview_text:
-                    preview_text_short = preview_text[:200]
+                    preview_text_short = preview_text[:self.preview_length]
                     failure_message += f"\n格式为 {encoding}，以下是预览：\n{preview_text_short}"
-                    if len(preview_text) > 200: failure_message += "..."
+                    if len(preview_text) > self.preview_length: failure_message += "..."
                 
                 chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=failure_message)])
                 await event.send(chain)
@@ -116,7 +114,6 @@ class GroupFileCheckerPlugin(Star):
 
     async def _check_validity_via_gfs(self, event: AstrMessageEvent) -> dict:
         group_id = int(event.get_group_id())
-        # 使用配置的延时来反推接收时间
         received_timestamp = time.time() - self.pre_check_delay_seconds
         
         try:
