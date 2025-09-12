@@ -3,7 +3,9 @@ import os
 from typing import List, Dict, Optional
 import datetime
 import time
+import json
 
+# 导入 chardet 库，如果您的环境没有，请先执行 pip install chardet
 import chardet
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
@@ -24,26 +26,14 @@ class GroupFileCheckerPlugin(Star):
     def __init__(self, context: Context, config: Optional[Dict] = None):
         super().__init__(context)
         self.config = config if config else {}
-        
         self.group_whitelist: List[int] = self.config.get("group_whitelist", [])
         self.group_whitelist = [int(gid) for gid in self.group_whitelist]
         self.notify_on_success: bool = self.config.get("notify_on_success", True)
         self.pre_check_delay_seconds: int = self.config.get("pre_check_delay_seconds", 10)
         self.check_delay_seconds: int = self.config.get("check_delay_seconds", 30)
-
         self.preview_length: int = self.config.get("preview_length", 200)
-        
         self.download_semaphore = asyncio.Semaphore(5)
-        
-        logger.info("插件 [群文件失效检查] 已加载 (综合诊断版)。")
-        logger.info(f"成功时通知: {'开启' if self.notify_on_success else '关闭'}")
-        logger.info(f"阶段一延时: {self.pre_check_delay_seconds} 秒")
-        logger.info(f"阶段二延时: {self.check_delay_seconds} 秒")
-        logger.info(f"预览长度: {self.preview_length} 字符")
-        if self.group_whitelist:
-            logger.info(f"已启用群聊白名单，只在以下群组生效: {self.group_whitelist}")
-        else:
-            logger.info("未配置群聊白名单，插件将在所有群组生效。")
+        logger.info("插件 [群文件失效检查] 已加载 (终极形态版 + 调试工具)。")
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
@@ -79,7 +69,6 @@ class GroupFileCheckerPlugin(Star):
             if self.notify_on_success:
                 success_message = "✅ 您发送的文件初步检查有效。"
                 if is_text and preview_text:
-                    # --- 修改点: 使用可配置的预览长度 ---
                     preview_text_short = preview_text[:self.preview_length]
                     success_message += f"\n格式为 {encoding}，以下是预览：\n{preview_text_short}"
                     if len(preview_text) > self.preview_length: success_message += "..."
@@ -87,7 +76,6 @@ class GroupFileCheckerPlugin(Star):
                 try:
                     chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=success_message)])
                     await event.send(chain)
-                    logger.info(f"[{group_id}] [阶段一] 已发送初步检查有效通知。")
                 except Exception as e:
                     logger.error(f"[{group_id}] [阶段一] 回复成功通知时出错: {e}")
 
@@ -101,16 +89,14 @@ class GroupFileCheckerPlugin(Star):
                 failure_message = "⚠️ 您发送的文件已失效。"
                 if is_text and preview_text:
                     preview_text_short = preview_text[:self.preview_length]
-                    failure_message += f"\n格式为 {encoding}，以下是预览：\n{preview_text_short}"
+                    failure_message += f"\n机器人仍可获取到以下内容预览：\n{preview_text_short}"
                     if len(preview_text) > self.preview_length: failure_message += "..."
                 
                 chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=failure_message)])
                 await event.send(chain)
-                logger.info(f"[{group_id}] [阶段一] 已发送综合诊断失效通知。")
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}")
             logger.info(f"[{group_id}] 初步检查失败，不进行延时复核。")
-
 
     async def _check_validity_via_gfs(self, event: AstrMessageEvent) -> dict:
         group_id = int(event.get_group_id())
@@ -119,7 +105,6 @@ class GroupFileCheckerPlugin(Star):
         try:
             assert isinstance(event, AiocqhttpMessageEvent)
             client = event.bot
-            
             api_result = await client.api.call_action('get_group_root_files', group_id=group_id)
             if not api_result or 'files' not in api_result:
                 return {"is_valid": False, "reason": "获取群文件列表失败"}
@@ -149,8 +134,7 @@ class GroupFileCheckerPlugin(Star):
         try:
             async with self.download_semaphore:
                 local_file_path = await file_component.get_file()
-                with open(local_file_path, 'rb') as f:
-                    content_bytes = f.read(2048)
+                with open(local_file_path, 'rb') as f: content_bytes = f.read(2048)
             detection = chardet.detect(content_bytes)
             encoding = detection.get('encoding', 'utf-8') or 'utf-8'
             if encoding and detection['confidence'] > 0.8:
@@ -186,6 +170,41 @@ class GroupFileCheckerPlugin(Star):
                 await event.send(chain)
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段二] 回复失效通知时再次发生错误: {send_e}")
+
+    # --- 新增: 之前实验用的调试指令 ---
+    def _timestamp_to_str(self, timestamp: int) -> str:
+        try:
+            dt_object = datetime.datetime.fromtimestamp(timestamp)
+            return dt_object.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return f"无法转换的时间戳: {timestamp}"
+
+    @filter.command("testfiles")
+    async def test_files_command(self, event: AstrMessageEvent):
+        """(调试指令) 获取群文件列表并打印到日志"""
+        try:
+            assert isinstance(event, AiocqhttpMessageEvent)
+            client = event.bot
+            group_id = int(event.get_group_id())
+            
+            payloads = {"group_id": group_id}
+            logger.info(f"[/testfiles] 正在调用API: 'get_group_root_files'，参数: {payloads}")
+            ret = await client.api.call_action('get_group_root_files', **payloads)
+            
+            # 转换所有文件和文件夹的时间戳
+            if ret:
+                if 'files' in ret and isinstance(ret.get('files'), list):
+                    for item in ret['files']:
+                        if 'modify_time' in item: item['modify_time_str'] = self._timestamp_to_str(item['modify_time'])
+                if 'folders' in ret and isinstance(ret.get('folders'), list):
+                    for item in ret['folders']:
+                        if 'create_time' in item: item['create_time_str'] = self._timestamp_to_str(item['create_time'])
+            
+            logger.info(f"--- get_group_root_files API 返回结果 ---\n{json.dumps(ret, indent=2, ensure_ascii=False)}\n--------------------")
+            yield event.plain_result("群文件列表API结果已打印到后台日志。")
+        except Exception as e:
+            logger.error(f"调用 /testfiles 失败: {e}", exc_info=True)
+            yield event.plain_result(f"调用API失败: {e}")
 
     async def terminate(self):
         logger.info("插件 [群文件失效检查] 已卸载。")
