@@ -22,5 +22,11 @@
         "hint": "预检通过后，再等待多少秒进行时效性复核。",
         "type": "int",
         "default": 300
+    },
+    "preview_length": {
+        "description": "文本预览长度 (字符)",
+        "hint": "设置在回复中显示的文本内容预览的最大字符数。",
+        "type": "int",
+        "default": 200
     }
 }
