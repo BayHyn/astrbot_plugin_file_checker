@@ -3,7 +3,6 @@ import os
 from typing import List, Dict, Optional
 import datetime
 import time
-import json
 
 # 导入 chardet 库，如果您的环境没有，请先执行 pip install chardet
 import chardet
@@ -33,7 +32,7 @@ class GroupFileCheckerPlugin(Star):
         self.check_delay_seconds: int = self.config.get("check_delay_seconds", 30)
         self.preview_length: int = self.config.get("preview_length", 200)
         self.download_semaphore = asyncio.Semaphore(5)
-        logger.info("插件 [群文件失效检查] 已加载 (智能搜索版)。")
+        logger.info("插件 [群文件失效检查] 已加载 (死锁修正版)。")
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
@@ -55,40 +54,51 @@ class GroupFileCheckerPlugin(Star):
         
         logger.info(f"[{group_id}] [阶段一] 开始即时检查...")
         
+        # --- 修改点: 将并行改为串行，避免死锁 ---
+        # 1. 先执行群文件系统检查
         gfs_check_result = await self._check_validity_via_gfs(event)
+        is_gfs_valid = gfs_check_result["is_valid"]
         
-        if not gfs_check_result["is_valid"]:
-            logger.error(f"❌ [{group_id}] [阶段一] 文件即时检查已失效! 原因: {gfs_check_result['reason']}")
-            try:
-                failure_message = "❌ 您发送的文件经即时检查已失效或无法在群文件中找到。"
-                chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=failure_message)])
-                await event.send(chain)
-            except Exception as send_e:
-                logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}")
-            return
+        # 2. 再根据需要，执行内容预览获取
+        preview_text, encoding, is_text = "", "", False
+        if self.notify_on_success: # 只有在需要通知时，才获取预览
+             preview_text, encoding, is_text = await self._get_text_preview(file_component)
 
         matched_file = gfs_check_result.get("matched_file")
-        file_name = matched_file.get('file_name', '未知文件名')
-        file_id = matched_file.get('file_id')
-
-        if self.notify_on_success:
-            is_txt = file_name.lower().endswith('.txt')
-            success_message = "✅ 您发送的文件初步检查有效。"
-            if is_txt:
-                preview_text, encoding = await self._get_text_preview(file_component)
-                if preview_text:
+        file_name = matched_file.get('file_name', '未知文件名') if matched_file else "未知文件名"
+        
+        if is_gfs_valid:
+            if self.notify_on_success:
+                success_message = "✅ 您发送的文件初步检查有效。"
+                if is_text and preview_text:
                     preview_text_short = preview_text[:self.preview_length]
                     success_message += f"\n格式为 {encoding}，以下是预览：\n{preview_text_short}"
                     if len(preview_text) > self.preview_length: success_message += "..."
+                try:
+                    chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=success_message)])
+                    await event.send(chain)
+                    logger.info(f"[{group_id}] [阶段一] 已发送初步检查有效通知。")
+                except Exception as e:
+                    logger.error(f"[{group_id}] [阶段一] 回复成功通知时出错: {e}")
+
+            file_id = matched_file.get('file_id')
+            logger.info(f"[{group_id}] 初步检查通过，已加入延时复核队列。")
+            asyncio.create_task(self._task_delayed_recheck(event, file_name, file_id))
+
+        else:
+            logger.error(f"❌ [{group_id}] [阶段一] 文件即时检查已失效! 原因: {gfs_check_result['reason']}")
             try:
-                chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=success_message)])
+                failure_message = "⚠️ 您发送的文件已失效。"
+                if is_text and preview_text:
+                    preview_text_short = preview_text[:self.preview_length]
+                    failure_message += f"\n机器人仍可获取到以下内容预览：\n{preview_text_short}"
+                    if len(preview_text) > self.preview_length: failure_message += "..."
+                chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=failure_message)])
                 await event.send(chain)
-                logger.info(f"[{group_id}] [阶段一] 已发送初步检查有效通知。")
-            except Exception as e:
-                logger.error(f"[{group_id}] [阶段一] 回复成功通知时出错: {e}")
-        
-        logger.info(f"[{group_id}] 初步检查通过，已加入延时复核队列。")
-        asyncio.create_task(self._task_delayed_recheck(event, file_name, file_id))
+                logger.info(f"[{group_id}] [阶段一] 已发送综合诊断失效通知。")
+            except Exception as send_e:
+                logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}")
+            logger.info(f"[{group_id}] 初步检查失败，不进行延时复核。")
 
     async def _check_validity_via_gfs(self, event: AstrMessageEvent) -> dict:
         group_id = int(event.get_group_id())
@@ -98,40 +108,31 @@ class GroupFileCheckerPlugin(Star):
             assert isinstance(event, AiocqhttpMessageEvent)
             client = event.bot
             
-            # --- 修改点: 完整的两步搜索逻辑 ---
-            # 1. 先查根目录
-            logger.info(f"[{group_id}] [API查询] 正在查找根目录...")
-            root_api_result = await client.api.call_action('get_group_root_files', group_id=group_id)
-            if not root_api_result:
-                return {"is_valid": False, "reason": "获取群文件根目录列表失败"}
+            api_result = await client.api.call_action('get_group_root_files', group_id=group_id)
+            if not api_result or 'files' not in api_result:
+                return {"is_valid": False, "reason": "获取群文件列表失败"}
 
             matched_file = None
             time_tolerance_seconds = 3
-            
-            if root_api_result.get('files'):
-                for file_info in root_api_result['files']:
-                    if abs(file_info.get('modify_time', 0) - received_timestamp) < time_tolerance_seconds:
-                        matched_file = file_info
-                        logger.info(f"[{group_id}] [API查询] 在根目录成功匹配到文件: {matched_file.get('file_name')}")
-                        break
-            
-            # 2. 如果根目录没找到，并且有文件夹，就去最新的文件夹里找
-            if not matched_file and root_api_result.get('folders'):
-                latest_folder = root_api_result['folders'][0]
-                folder_id = latest_folder.get('folder_id')
-                folder_name = latest_folder.get('folder_name')
-                logger.info(f"[{group_id}] [API查询] 根目录未匹配到，正在查找最新文件夹 '{folder_name}'...")
-                
-                sub_api_result = await client.api.call_action('get_group_files_by_folder', group_id=group_id, folder_id=folder_id)
-                if sub_api_result and sub_api_result.get('files'):
-                    for file_info in sub_api_result['files']:
-                        if abs(file_info.get('modify_time', 0) - received_timestamp) < time_tolerance_seconds:
-                            matched_file = file_info
-                            logger.info(f"[{group_id}] [API查询] 在子目录 '{folder_name}' 成功匹配到文件: {matched_file.get('file_name')}")
-                            break
+            for file_info in api_result['files']:
+                if abs(file_info.get('modify_time', 0) - received_timestamp) < time_tolerance_seconds:
+                    matched_file = file_info
+                    break
             
             if not matched_file:
-                return {"is_valid": False, "reason": "未能在根目录或最新文件夹中匹配到文件"}
+                folders = api_result.get('folders', [])
+                if folders:
+                    latest_folder = folders[0]
+                    folder_id = latest_folder.get('folder_id')
+                    sub_api_result = await client.api.call_action('get_group_files_by_folder', group_id=group_id, folder_id=folder_id)
+                    if sub_api_result and sub_api_result.get('files'):
+                        for file_info in sub_api_result['files']:
+                            if abs(file_info.get('modify_time', 0) - received_timestamp) < time_tolerance_seconds:
+                                matched_file = file_info
+                                break
+            
+            if not matched_file:
+                return {"is_valid": False, "reason": "未能在群文件系统中匹配到文件"}
 
             file_id = matched_file.get('file_id')
             url_result = await client.api.call_action('get_group_file_url', group_id=group_id, file_id=file_id)
