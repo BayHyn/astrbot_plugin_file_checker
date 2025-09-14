@@ -19,7 +19,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import Aioc
     "astrbot_plugin_file_checker",
     "Foolllll",
     "群文件失效检查",
-    "1.1",
+    "1.2",
     "https://github.com/Foolllll-J/astrbot_plugin_file_checker"
 )
 class GroupFileCheckerPlugin(Star):
@@ -29,12 +29,12 @@ class GroupFileCheckerPlugin(Star):
         self.group_whitelist: List[int] = self.config.get("group_whitelist", [])
         self.group_whitelist = [int(gid) for gid in self.group_whitelist]
         self.notify_on_success: bool = self.config.get("notify_on_success", True)
-        self.pre_check_delay_seconds: int = self.config.get("pre_check_delay_seconds", 3)
-        self.check_delay_seconds: int = self.config.get("check_delay_seconds", 30)
+        self.pre_check_delay_seconds: int = self.config.get("pre_check_delay_seconds", 10)
+        self.check_delay_seconds: int = self.config.get("check_delay_seconds", 300)
         self.preview_length: int = self.config.get("preview_length", 200)
-        self.forward_threshold: int = self.config.get("forward_threshold", 400)
+        self.forward_threshold: int = self.config.get("forward_threshold", 300)
         self.download_semaphore = asyncio.Semaphore(5)
-        logger.info("插件 [群文件失效检查] 已加载 (最终调试版)。")
+        logger.info("插件 [群文件失效检查] 已加载。")
 
     def _find_file_component(self, event: AstrMessageEvent) -> Optional[Comp.File]:
         """一个简单的辅助函数，用于从消息中找到并返回第一个文件组件对象。"""
@@ -45,45 +45,35 @@ class GroupFileCheckerPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
-        # 步骤 1: 检查白名单
         group_id = int(event.get_group_id())
         if self.group_whitelist and group_id not in self.group_whitelist:
             return
 
         try:
-            # 步骤 2: 直接获取最原始的事件数据字典
             raw_event_data = event.message_obj.raw_message
             
-            # 步骤 3: 从原始字典中找到 "message" 字段，它是一个列表
             message_list = raw_event_data.get("message")
             
             if not isinstance(message_list, list):
-                return # 如果没有 message 列表，直接退出
+                return
 
-            # 步骤 4: 遍历这个原始消息段列表
             for segment_dict in message_list:
-                # 步骤 5: 检查当前段的 "type" 是否为 "file"
                 if isinstance(segment_dict, dict) and segment_dict.get("type") == "file":
                     
-                    # 步骤 6: 进入 "data" 字典，提取文件名和ID
                     data_dict = segment_dict.get("data", {})
                     file_name = data_dict.get("file")
                     file_id = data_dict.get("file_id")
 
-                    # 步骤 7: 确保成功提取
                     if file_name and file_id:
                         logger.info(f"【原始方式】成功解析: 文件名='{file_name}', ID='{file_id}'"f"【原始方式】成功解析: 文件名='{file_name}', ID='{file_id}'")
                         
-                        # 步骤 8: 获取功能必需的 File 组件对象
                         file_component = self._find_file_component(event)
                         if not file_component:
                             logger.error("致命错误：已从原始数据中解析出文件，但无法在高级组件中找到对应的File对象！")
                             return
 
-                        # 步骤 9: 调用后续处理流程
                         asyncio.create_task(self._handle_file_check_flow(event, file_name, file_id, file_component))
                         
-                        # 找到文件后立即退出循环
                         break
         except Exception as e:
             logger.error(f"【原始方式】处理消息时发生致命错误: {e}", exc_info=True)
@@ -93,7 +83,6 @@ class GroupFileCheckerPlugin(Star):
                 return segment
         return None
     
-    # ... 后续所有功能函数 (_send_or_forward, _handle_file_check_flow, 等) 都保持不变 ...
     async def _send_or_forward(self, event: AstrMessageEvent, text: str, message_id: int):
         if self.forward_threshold <= 0 or len(text) <= self.forward_threshold:
             chain = MessageChain([Reply(id=message_id), Plain(text=text)])
