@@ -36,7 +36,6 @@ class GroupFileCheckerPlugin(Star):
         self.download_semaphore = asyncio.Semaphore(5)
         logger.info("插件 [群文件失效检查] 已加载 (最终调试版)。")
 
-    # --- 这里是唯一的修改点，增加了大量日志探针 ---
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
         logger.info("--- on_group_message [步骤 1]: 函数被成功调用 ---")
@@ -47,41 +46,36 @@ class GroupFileCheckerPlugin(Star):
             if self.group_whitelist and group_id not in self.group_whitelist:
                 logger.info(f"--- on_group_message [步骤 2.1]: 群 {group_id} 不在白名单，已忽略。 ---")
                 return
-            
-            logger.info("--- on_group_message [步骤 3]: 准备访问 event.message_obj ---")
-            if not event.message_obj:
-                logger.warning("--- on_group_message [步骤 3.1]: event.message_obj 不存在，忽略此事件。 ---")
-                return
-            
-            message_chain_list = event.message_obj.message
-            logger.info(f"--- on_group_message [步骤 4]: 成功获取 message_obj.message，类型为: {type(message_chain_list)} ---")
 
-            if not isinstance(message_chain_list, list):
-                logger.warning(f"--- on_group_message [步骤 4.1]: message 不是列表，忽略此事件。 ---")
-                return
+            # 【关键修改点】: 我们不再访问底层的 message_obj.message，而是使用框架推荐的 get_messages()
+            # 它返回的是一个由 Comp.File, Comp.Plain 等对象组成的列表
+            message_components = event.get_messages()
+            logger.info(f"--- on_group_message [步骤 4]: 成功获取消息组件列表，共 {len(message_components)} 个组件 ---")
 
-            logger.info("--- on_group_message [步骤 5]: 开始遍历消息链... ---")
+            logger.info("--- on_group_message [步骤 5]: 开始遍历消息组件... ---")
             file_found = False
-            for segment_data in message_chain_list:
-                if isinstance(segment_data, dict) and segment_data.get("type") == "file":
+            for segment in message_components:
+                # 【关键修改点】: 直接判断 segment 是否是 Comp.File 的实例
+                if isinstance(segment, Comp.File):
                     file_found = True
-                    logger.info("--- on_group_message [步骤 6]: 找到文件段，准备解析... ---")
-                    data = segment_data.get("data", {})
-                    file_name = data.get("file")
-                    file_id = data.get("file_id")
-                    file_component = self._get_file_component_from_event(event)
+                    logger.info("--- on_group_message [步骤 6]: 找到文件组件，准备解析... ---")
                     
-                    if file_name and file_id and file_component:
-                        logger.info(f"--- on_group_message [步骤 6.1]: 成功从原始消息中解析到文件: '{file_name}', ID: {file_id} ---")
-                        asyncio.create_task(self._handle_file_check_flow(event, file_name, file_id, file_component))
+                    # 从 Comp.File 对象中直接获取属性
+                    file_name = segment.name  # 文件名
+                    file_id = segment.id      # 文件ID
+                    
+                    if file_name and file_id:
+                        logger.info(f"--- on_group_message [步骤 6.1]: 成功从消息组件中解析到文件: '{file_name}', ID: {file_id} ---")
+                        # 这里的第三个参数需要传入文件组件对象本身
+                        asyncio.create_task(self._handle_file_check_flow(event, file_name, file_id, segment))
                     else:
-                        logger.warning("--- on_group_message [步骤 6.2]: 找到了文件段，但无法解析出文件名或ID。 ---")
-                    break
+                        logger.warning("--- on_group_message [步骤 6.2]: 找到了文件组件，但无法获取文件名或ID。 ---")
+                    break # 通常一条消息只有一个文件，找到后即可退出循环
             
             if file_found:
-                 logger.info("--- on_group_message [步骤 7]: 消息链遍历完成（已找到文件）。 ---")
+                logger.info("--- on_group_message [步骤 7]: 消息组件遍历完成（已找到文件）。 ---")
             else:
-                 logger.info("--- on_group_message [步骤 7]: 消息链遍历完成（未找到文件）。 ---")
+                logger.info("--- on_group_message [步骤 7]: 消息组件遍历完成（未找到文件）。 ---")
 
         except Exception as e:
             logger.error(f"--- on_group_message [致命错误]: 函数在执行过程中崩溃! 原因: {e} ---", exc_info=True)
