@@ -51,8 +51,11 @@ class GroupFileCheckerPlugin(Star):
             chain = MessageChain([Reply(id=message_id), Plain(text=fallback_text)])
             await event.send(chain)
 
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=20)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
+        logger.info("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        logger.info("!!! [FileChecker] on_group_message 被成功触发了 !!!")
+        logger.info("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         group_id = int(event.get_group_id())
         if self.group_whitelist and group_id not in self.group_whitelist:
             return
