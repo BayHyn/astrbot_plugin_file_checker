@@ -57,12 +57,13 @@ class GroupFileCheckerPlugin(Star):
             for segment in message_components:
                 # 【关键修改点】: 直接判断 segment 是否是 Comp.File 的实例
                 if isinstance(segment, Comp.File):
+                    logger.info(f"--- [调试] 发现文件对象，其可用属性为: {dir(segment)} ---")
                     file_found = True
                     logger.info("--- on_group_message [步骤 6]: 找到文件组件，准备解析... ---")
                     
                     # 从 Comp.File 对象中直接获取属性
                     file_name = segment.name  # 文件名
-                    file_id = segment.id      # 文件ID
+                    file_id = segment.file_id     # 文件ID
                     
                     if file_name and file_id:
                         logger.info(f"--- on_group_message [步骤 6.1]: 成功从消息组件中解析到文件: '{file_name}', ID: {file_id} ---")
