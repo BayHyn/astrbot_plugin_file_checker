@@ -36,51 +36,57 @@ class GroupFileCheckerPlugin(Star):
         self.download_semaphore = asyncio.Semaphore(5)
         logger.info("插件 [群文件失效检查] 已加载 (最终调试版)。")
 
+    def _find_file_component(self, event: AstrMessageEvent) -> Optional[Comp.File]:
+        """一个简单的辅助函数，用于从消息中找到并返回第一个文件组件对象。"""
+        for segment in event.get_messages():
+            if isinstance(segment, Comp.File):
+                return segment
+        return None
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
-        logger.info("--- on_group_message [步骤 1]: 函数被成功调用 ---")
+        # 步骤 1: 检查白名单
+        group_id = int(event.get_group_id())
+        if self.group_whitelist and group_id not in self.group_whitelist:
+            return
+
         try:
-            group_id = int(event.get_group_id())
-            logger.info(f"--- on_group_message [步骤 2]: 成功获取 group_id: {group_id} ---")
+            # 步骤 2: 直接获取最原始的事件数据字典
+            raw_event_data = event.message_obj.raw_message
             
-            if self.group_whitelist and group_id not in self.group_whitelist:
-                logger.info(f"--- on_group_message [步骤 2.1]: 群 {group_id} 不在白名单，已忽略。 ---")
-                return
+            # 步骤 3: 从原始字典中找到 "message" 字段，它是一个列表
+            message_list = raw_event_data.get("message")
+            
+            if not isinstance(message_list, list):
+                return # 如果没有 message 列表，直接退出
 
-            # 【关键修改点】: 我们不再访问底层的 message_obj.message，而是使用框架推荐的 get_messages()
-            # 它返回的是一个由 Comp.File, Comp.Plain 等对象组成的列表
-            message_components = event.get_messages()
-            logger.info(f"--- on_group_message [步骤 4]: 成功获取消息组件列表，共 {len(message_components)} 个组件 ---")
+            # 步骤 4: 遍历这个原始消息段列表
+            for segment_dict in message_list:
+                # 步骤 5: 检查当前段的 "type" 是否为 "file"
+                if isinstance(segment_dict, dict) and segment_dict.get("type") == "file":
+                    
+                    # 步骤 6: 进入 "data" 字典，提取文件名和ID
+                    data_dict = segment_dict.get("data", {})
+                    file_name = data_dict.get("file")
+                    file_id = data_dict.get("file_id")
 
-            logger.info("--- on_group_message [步骤 5]: 开始遍历消息组件... ---")
-            file_found = False
-            for segment in message_components:
-                # 【关键修改点】: 直接判断 segment 是否是 Comp.File 的实例
-                if isinstance(segment, Comp.File):
-                    logger.info(f"--- [调试] 发现文件对象，其可用属性为: {dir(segment)} ---")
-                    file_found = True
-                    logger.info("--- on_group_message [步骤 6]: 找到文件组件，准备解析... ---")
-                    
-                    # 从 Comp.File 对象中直接获取属性
-                    file_name = segment.name  # 文件名
-                    file_id = segment.file_id     # 文件ID
-                    
+                    # 步骤 7: 确保成功提取
                     if file_name and file_id:
-                        logger.info(f"--- on_group_message [步骤 6.1]: 成功从消息组件中解析到文件: '{file_name}', ID: {file_id} ---")
-                        # 这里的第三个参数需要传入文件组件对象本身
-                        asyncio.create_task(self._handle_file_check_flow(event, file_name, file_id, segment))
-                    else:
-                        logger.warning("--- on_group_message [步骤 6.2]: 找到了文件组件，但无法获取文件名或ID。 ---")
-                    break # 通常一条消息只有一个文件，找到后即可退出循环
-            
-            if file_found:
-                logger.info("--- on_group_message [步骤 7]: 消息组件遍历完成（已找到文件）。 ---")
-            else:
-                logger.info("--- on_group_message [步骤 7]: 消息组件遍历完成（未找到文件）。 ---")
+                        logger.info(f"【原始方式】成功解析: 文件名='{file_name}', ID='{file_id}'"f"【原始方式】成功解析: 文件名='{file_name}', ID='{file_id}'")
+                        
+                        # 步骤 8: 获取功能必需的 File 组件对象
+                        file_component = self._find_file_component(event)
+                        if not file_component:
+                            logger.error("致命错误：已从原始数据中解析出文件，但无法在高级组件中找到对应的File对象！")
+                            return
 
+                        # 步骤 9: 调用后续处理流程
+                        asyncio.create_task(self._handle_file_check_flow(event, file_name, file_id, file_component))
+                        
+                        # 找到文件后立即退出循环
+                        break
         except Exception as e:
-            logger.error(f"--- on_group_message [致命错误]: 函数在执行过程中崩溃! 原因: {e} ---", exc_info=True)
-
+            logger.error(f"【原始方式】处理消息时发生致命错误: {e}", exc_info=True)
     def _get_file_component_from_event(self, event: AstrMessageEvent) -> Optional[Comp.File]:
         for segment in event.get_messages():
             if isinstance(segment, Comp.File):
