@@ -51,11 +51,11 @@ class GroupFileCheckerPlugin(Star):
             chain = MessageChain([Reply(id=message_id), Plain(text=fallback_text)])
             await event.send(chain)
 
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=20)
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
-        logger.info("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        logger.info("!!! [FileChecker] on_group_message 被成功触发了 !!!")
-        logger.info("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        if not event.message_obj or not event.message_obj.raw_message:
+            return
+            
         group_id = int(event.get_group_id())
         if self.group_whitelist and group_id not in self.group_whitelist:
             return
@@ -68,10 +68,12 @@ class GroupFileCheckerPlugin(Star):
                 if segment_data.get("type") == "file":
                     data = segment_data.get("data", {})
                     file_name = data.get("file")
+                    file_id = data.get("file_id")
                     file_component = self._get_file_component_from_event(event)
-                    if file_name and file_component:
-                        asyncio.create_task(self._handle_file_check_flow(event, file_name, file_component))
-                    break
+                    if file_name and file_id and file_component:
+                        logger.info(f"成功从原始消息中解析到文件: '{file_name}', ID: {file_id}")
+                        asyncio.create_task(self._handle_file_check_flow(event, file_name, file_id, file_component))
+                    break 
         except Exception as e:
             logger.error(f"解析原始消息时出错: {e}", exc_info=True)
 
@@ -81,7 +83,7 @@ class GroupFileCheckerPlugin(Star):
                 return segment
         return None
 
-    async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_component: Comp.File):
+    async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File):
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
         
@@ -89,9 +91,9 @@ class GroupFileCheckerPlugin(Star):
         
         logger.info(f"[{group_id}] [阶段一] 开始即时检查: '{file_name}'")
         
-        check_result = await self._verify_and_check_file(event, file_name)
+        is_gfs_valid = await self._check_validity_via_gfs(event, file_id)
         
-        if check_result["is_valid"]:
+        if is_gfs_valid:
             if self.notify_on_success:
                 is_txt = file_name.lower().endswith('.txt')
                 success_message = f"✅ 您发送的文件「{file_name}」初步检查有效。"
@@ -103,12 +105,11 @@ class GroupFileCheckerPlugin(Star):
                         if len(preview_text) > self.preview_length: success_message += "..."
                 await self._send_or_forward(event, success_message, message_id)
 
-            verified_file_id = check_result["verified_file_id"]
             logger.info(f"[{group_id}] 初步检查通过，已加入延时复核队列。")
-            asyncio.create_task(self._task_delayed_recheck(event, file_name, verified_file_id))
+            asyncio.create_task(self._task_delayed_recheck(event, file_name, file_id))
 
         else:
-            logger.error(f"❌ [{group_id}] [阶段一] 文件 '{file_name}' 即时检查已失效! 原因: {check_result['reason']}")
+            logger.error(f"❌ [{group_id}] [阶段一] 文件 '{file_name}' 即时检查已失效!")
             try:
                 preview_text, encoding, is_text = await self._get_text_preview(file_component)
                 failure_message = f"⚠️ 您发送的文件「{file_name}」已失效或无法在群文件中验证（对其他群友可能无法下载）。"
@@ -121,57 +122,15 @@ class GroupFileCheckerPlugin(Star):
                 logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}")
             logger.info(f"[{group_id}] 初步检查失败，不进行延时复核。")
 
-    async def _verify_and_check_file(self, event: AstrMessageEvent, target_filename: str) -> dict:
+    async def _check_validity_via_gfs(self, event: AstrMessageEvent, file_id: str) -> bool:
         group_id = int(event.get_group_id())
-        sender_id = int(event.get_sender_id())
-        message_timestamp = event.message_obj.time
-        
         try:
             assert isinstance(event, AiocqhttpMessageEvent)
             client = event.bot
-            
-            all_gfs_files = await self._get_all_gfs_files(client, group_id)
-            if not all_gfs_files:
-                return {"is_valid": False, "reason": "群文件系统为空或获取失败"}
-
-            verified_file = None
-            time_tolerance_seconds = 60
-            for file_info in all_gfs_files:
-                is_name_match = (file_info.get('file_name') == target_filename)
-                is_uploader_match = (file_info.get('uploader') == sender_id)
-                is_time_match = (abs(file_info.get('modify_time', 0) - message_timestamp) < time_tolerance_seconds)
-                
-                if is_name_match and is_uploader_match and is_time_match:
-                    verified_file = file_info
-                    logger.info(f"[{group_id}] [API查询] 三重验证成功匹配到文件: {target_filename}")
-                    break
-            
-            if not verified_file:
-                return {"is_valid": False, "reason": "三重验证失败，未能在群文件中匹配到该文件"}
-
-            file_id = verified_file.get('file_id')
             url_result = await client.api.call_action('get_group_file_url', group_id=group_id, file_id=file_id)
-            
-            if url_result and url_result.get('url'):
-                return {"is_valid": True, "verified_file_id": file_id}
-            else:
-                return {"is_valid": False, "reason": f"get_group_file_url API 调用失败"}
-        except Exception as e:
-            return {"is_valid": False, "reason": f"验证过程中发生异常: {e}"}
-
-    async def _get_all_gfs_files(self, client, group_id: int) -> List[Dict]:
-        all_files = []
-        root_api_result = await client.api.call_action('get_group_root_files', group_id=group_id)
-        if not root_api_result: return []
-        if root_api_result.get('files'): all_files.extend(root_api_result.get('files'))
-        if root_api_result.get('folders'):
-            for folder in root_api_result.get('folders', []):
-                folder_id = folder.get('folder_id')
-                if not folder_id: continue
-                sub_api_result = await client.api.call_action('get_group_files_by_folder', group_id=group_id, folder_id=folder_id)
-                if sub_api_result and sub_api_result.get('files'):
-                    all_files.extend(sub_api_result.get('files'))
-        return all_files
+            return bool(url_result and url_result.get('url'))
+        except Exception:
+            return False
 
     async def _get_text_preview(self, file_component: Comp.File) -> tuple[str, str]:
         local_file_path = None
@@ -197,21 +156,19 @@ class GroupFileCheckerPlugin(Star):
         await asyncio.sleep(self.check_delay_seconds)
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
+        
         logger.info(f"[{group_id}] [阶段二] 开始延时复核: '{file_name}'")
-        try:
-            assert isinstance(event, AiocqhttpMessageEvent)
-            client = event.bot
-            url_result = await client.api.call_action('get_group_file_url', group_id=group_id, file_id=file_id)
-            if not (url_result and url_result.get('url')):
-                raise ValueError(f"get_group_file_url API 调用失败。响应: {url_result}")
-            logger.info(f"✅ [{group_id}] [阶段二] 文件 '{file_name}' 延时复核通过，保持沉默。")
-        except Exception as e:
-            logger.error(f"❌ [{group_id}] [阶段二] 文件在延时复核时确认已失效! 原因: {e}")
+        is_still_valid = await self._check_validity_via_gfs(event, file_id)
+        
+        if not is_still_valid:
+            logger.error(f"❌ [{group_id}] [阶段二] 文件 '{file_name}' 在延时复核时确认已失效!")
             try:
                 failure_message = f"❌ 经 {self.check_delay_seconds} 秒后复核，您发送的文件「{file_name}」已失效。"
                 await self._send_or_forward(event, failure_message, message_id)
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段二] 回复失效通知时再次发生错误: {send_e}")
+        else:
+             logger.info(f"✅ [{group_id}] [阶段二] 文件 '{file_name}' 延时复核通过，保持沉默。")
 
     async def terminate(self):
         logger.info("插件 [群文件失效检查] 已卸载。")
