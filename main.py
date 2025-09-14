@@ -51,7 +51,7 @@ class GroupFileCheckerPlugin(Star):
             chain = MessageChain([Reply(id=message_id), Plain(text=fallback_text)])
             await event.send(chain)
 
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
         group_id = int(event.get_group_id())
         if self.group_whitelist and group_id not in self.group_whitelist:
@@ -119,7 +119,6 @@ class GroupFileCheckerPlugin(Star):
             logger.info(f"[{group_id}] 初步检查失败，不进行延时复核。")
 
     async def _verify_and_check_file(self, event: AstrMessageEvent, target_filename: str) -> dict:
-        """核心验证函数：在群文件系统中进行三重匹配，然后检查有效性"""
         group_id = int(event.get_group_id())
         sender_id = int(event.get_sender_id())
         message_timestamp = event.message_obj.time
@@ -128,14 +127,12 @@ class GroupFileCheckerPlugin(Star):
             assert isinstance(event, AiocqhttpMessageEvent)
             client = event.bot
             
-            # 1. 获取所有文件
             all_gfs_files = await self._get_all_gfs_files(client, group_id)
             if not all_gfs_files:
                 return {"is_valid": False, "reason": "群文件系统为空或获取失败"}
 
-            # 2. 进行三重匹配
             verified_file = None
-            time_tolerance_seconds = 60 # 1分钟容差
+            time_tolerance_seconds = 60
             for file_info in all_gfs_files:
                 is_name_match = (file_info.get('file_name') == target_filename)
                 is_uploader_match = (file_info.get('uploader') == sender_id)
@@ -149,7 +146,6 @@ class GroupFileCheckerPlugin(Star):
             if not verified_file:
                 return {"is_valid": False, "reason": "三重验证失败，未能在群文件中匹配到该文件"}
 
-            # 3. 检查有效性
             file_id = verified_file.get('file_id')
             url_result = await client.api.call_action('get_group_file_url', group_id=group_id, file_id=file_id)
             
@@ -161,7 +157,6 @@ class GroupFileCheckerPlugin(Star):
             return {"is_valid": False, "reason": f"验证过程中发生异常: {e}"}
 
     async def _get_all_gfs_files(self, client, group_id: int) -> List[Dict]:
-        """辅助函数：获取根目录和所有一级子目录的全部文件列表"""
         all_files = []
         root_api_result = await client.api.call_action('get_group_root_files', group_id=group_id)
         if not root_api_result: return []
