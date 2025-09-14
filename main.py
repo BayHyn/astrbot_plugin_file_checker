@@ -34,63 +34,7 @@ class GroupFileCheckerPlugin(Star):
         self.preview_length: int = self.config.get("preview_length", 200)
         self.forward_threshold: int = self.config.get("forward_threshold", 400)
         self.download_semaphore = asyncio.Semaphore(5)
-        logger.info("插件 [群文件失效检查] 已加载 (最终探查版)。")
-
-    # --- 这里是唯一的修改点，增加了大量日志探针 ---
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
-    async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
-        logger.info("--- on_group_message [步骤 1]: 函数被成功调用 ---")
-        try:
-            group_id = int(event.get_group_id())
-            logger.info(f"--- on_group_message [步骤 2]: 成功获取 group_id: {group_id} ---")
-            
-            if self.group_whitelist and group_id not in self.group_whitelist:
-                logger.info(f"--- on_group_message [步骤 2.1]: 群 {group_id} 不在白名单，已忽略。 ---")
-                return
-            
-            logger.info("--- on_group_message [步骤 3]: 准备访问 event.message_obj ---")
-            if not event.message_obj:
-                logger.warning("--- on_group_message [步骤 3.1]: event.message_obj 不存在，忽略此事件。 ---")
-                return
-            
-            message_chain_list = event.message_obj.message
-            logger.info(f"--- on_group_message [步骤 4]: 成功获取 message_obj.message，类型为: {type(message_chain_list)} ---")
-
-            if not isinstance(message_chain_list, list):
-                logger.warning("--- on_group_message [步骤 4.1]: message 不是列表，忽略此事件。 ---")
-                return
-
-            logger.info("--- on_group_message [步骤 5]: 开始遍历消息链... ---")
-            file_found = False
-            for segment_data in message_chain_list:
-                if isinstance(segment_data, dict) and segment_data.get("type") == "file":
-                    file_found = True
-                    logger.info("--- on_group_message [步骤 6]: 找到文件段，准备启动任务... ---")
-                    data = segment_data.get("data", {})
-                    file_name = data.get("file")
-                    file_id = data.get("file_id")
-                    file_component = self._get_file_component_from_event(event)
-                    if file_name and file_id and file_component:
-                        logger.info(f"成功从原始消息中解析到文件: '{file_name}', ID: {file_id}")
-                        asyncio.create_task(self._handle_file_check_flow(event, file_name, file_id, file_component))
-                    else:
-                        logger.warning("--- on_group_message [步骤 6.1]: 找到了文件段，但无法解析出文件名或ID。 ---")
-                    break
-            
-            if file_found:
-                 logger.info("--- on_group_message [步骤 7]: 消息链遍历完成（已找到文件）。 ---")
-            else:
-                 logger.info("--- on_group_message [步骤 7]: 消息链遍历完成（未找到文件）。 ---")
-
-        except Exception as e:
-            logger.error(f"--- on_group_message [致命错误]: 函数在执行过程中崩溃! 原因: {e} ---", exc_info=True)
-
-    # --- 后续所有函数都保持不变 ---
-    def _get_file_component_from_event(self, event: AstrMessageEvent) -> Optional[Comp.File]:
-        for segment in event.get_messages():
-            if isinstance(segment, Comp.File):
-                return segment
-        return None
+        logger.info("插件 [群文件失效检查] 已加载。")
 
     async def _send_or_forward(self, event: AstrMessageEvent, text: str, message_id: int):
         if self.forward_threshold <= 0 or len(text) <= self.forward_threshold:
@@ -106,6 +50,44 @@ class GroupFileCheckerPlugin(Star):
             fallback_text = text[:self.forward_threshold] + "... (消息过长且合并转发失败)"
             chain = MessageChain([Reply(id=message_id), Plain(text=fallback_text)])
             await event.send(chain)
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
+    async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
+        group_id = int(event.get_group_id())
+        if self.group_whitelist and group_id not in self.group_whitelist:
+            return
+            
+        # --- 最终修正点: 完全遵循您成功的“侦查版”逻辑 ---
+        try:
+            # 1. 直接获取原始消息列表
+            message_chain_list = event.message_obj.message
+            if not isinstance(message_chain_list, list): return
+
+            # 2. 遍历这个由【字典】组成的列表
+            for segment_data in message_chain_list:
+                if isinstance(segment_data, dict) and segment_data.get("type") == "file":
+                    data = segment_data.get("data", {})
+                    file_name = data.get("file")
+                    file_id = data.get("file_id")
+                    
+                    # 3. 我们依然需要高级的 File 组件来执行下载
+                    file_component = self._get_file_component_from_event(event)
+                    
+                    if file_name and file_id and file_component:
+                        logger.info(f"成功从原始消息中解析到文件: '{file_name}', ID: {file_id}")
+                        asyncio.create_task(self._handle_file_check_flow(event, file_name, file_id, file_component))
+                    else:
+                        logger.warning("在消息中发现File组件，但无法从原始数据中解析出详细信息。")
+                    break # 只处理第一个文件
+        except Exception as e:
+            logger.error(f"解析消息时出错: {e}", exc_info=True)
+
+    def _get_file_component_from_event(self, event: AstrMessageEvent) -> Optional[Comp.File]:
+        """辅助函数: 从 event.get_messages() 中提取出高级 File 组件对象"""
+        for segment in event.get_messages():
+            if isinstance(segment, Comp.File):
+                return segment
+        return None
 
     async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File):
         group_id = int(event.get_group_id())
@@ -130,7 +112,7 @@ class GroupFileCheckerPlugin(Star):
             logger.error(f"❌ [{group_id}] [阶段一] 文件 '{file_name}' 即时检查已失效!")
             try:
                 preview_text, encoding, is_text = await self._get_text_preview(file_component)
-                failure_message = f"⚠️ 您发送的文件「{file_name}」已失效或无法在群文件中验证（对其他群友可能无法下载）。"
+                failure_message = f"⚠️ 您发送的文件「{file_name}」已失效（对其他群友可能无法下载）。"
                 if is_text and preview_text:
                     preview_text_short = preview_text[:self.preview_length]
                     failure_message += f"\n机器人仍可获取到以下内容预览：\n{preview_text_short}"
