@@ -51,31 +51,31 @@ class GroupFileCheckerPlugin(Star):
             chain = MessageChain([Reply(id=message_id), Plain(text=fallback_text)])
             await event.send(chain)
 
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=1)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
-        if not event.message_obj or not event.message_obj.raw_message:
-            return
-            
         group_id = int(event.get_group_id())
         if self.group_whitelist and group_id not in self.group_whitelist:
             return
 
         try:
-            raw_message_chain = event.message_obj.raw_message
-            if not isinstance(raw_message_chain, list): return
+            # --- 最终修正点: 解析 event.message_obj.message ---
+            message_chain = event.message_obj.message
+            if not isinstance(message_chain, list): return
 
-            for segment_data in raw_message_chain:
+            for segment_data in message_chain:
                 if segment_data.get("type") == "file":
                     data = segment_data.get("data", {})
                     file_name = data.get("file")
                     file_id = data.get("file_id")
+                    
                     file_component = self._get_file_component_from_event(event)
+                    
                     if file_name and file_id and file_component:
                         logger.info(f"成功从原始消息中解析到文件: '{file_name}', ID: {file_id}")
                         asyncio.create_task(self._handle_file_check_flow(event, file_name, file_id, file_component))
-                    break 
+                    break
         except Exception as e:
-            logger.error(f"解析原始消息时出错: {e}", exc_info=True)
+            logger.error(f"解析消息时出错: {e}", exc_info=True)
 
     def _get_file_component_from_event(self, event: AstrMessageEvent) -> Optional[Comp.File]:
         for segment in event.get_messages():
@@ -112,7 +112,7 @@ class GroupFileCheckerPlugin(Star):
             logger.error(f"❌ [{group_id}] [阶段一] 文件 '{file_name}' 即时检查已失效!")
             try:
                 preview_text, encoding, is_text = await self._get_text_preview(file_component)
-                failure_message = f"⚠️ 您发送的文件「{file_name}」已失效或无法在群文件中验证（对其他群友可能无法下载）。"
+                failure_message = f"⚠️ 您发送的文件「{file_name}」已失效（对其他群友可能无法下载）。"
                 if is_text and preview_text:
                     preview_text_short = preview_text[:self.preview_length]
                     failure_message += f"\n机器人仍可获取到以下内容预览：\n{preview_text_short}"
