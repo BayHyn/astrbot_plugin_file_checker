@@ -5,21 +5,21 @@ import datetime
 import time
 import json
 
-# 导入 chardet 库，如果您的环境没有，请先执行 pip install chardet
+# 导入 chardet 库
 import chardet
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
-from astrbot.api.message_components import Reply, Plain
+from astrbot.api.message_components import Reply, Plain, Node
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
 @register(
     "astrbot_plugin_file_checker",
     "Foolllll",
     "群文件失效检查",
-    "1.1",
+    "1.2",
     "https://github.com/Foolllll-J/astrbot_plugin_file_checker"
 )
 class GroupFileCheckerPlugin(Star):
@@ -32,8 +32,36 @@ class GroupFileCheckerPlugin(Star):
         self.pre_check_delay_seconds: int = self.config.get("pre_check_delay_seconds", 10)
         self.check_delay_seconds: int = self.config.get("check_delay_seconds", 30)
         self.preview_length: int = self.config.get("preview_length", 200)
+        self.forward_threshold: int = self.config.get("forward_threshold", 400)
+        
         self.download_semaphore = asyncio.Semaphore(5)
-        logger.info("插件 [群文件失效检查] 已加载。")
+        logger.info("插件 [群文件失效检查] 已加载 (自动合并转发版)。")
+        logger.info(f"长消息转发阈值: {'禁用' if self.forward_threshold <= 0 else str(self.forward_threshold) + '字符'}")
+
+    async def _send_or_forward(self, event: AstrMessageEvent, text: str, message_id: int):
+        """检查文本长度，如果超过阈值则合并转发，否则直接引用回复。"""
+        # 禁用转发功能或文本长度未超限，则直接引用回复
+        if self.forward_threshold <= 0 or len(text) <= self.forward_threshold:
+            chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=text)])
+            await event.send(chain)
+            return
+
+        # 文本过长，构建转发消息
+        logger.info(f"[{event.get_group_id()}] 检测到长消息 (长度: {len(text)} > {self.forward_threshold})，将自动合并转发。")
+        try:
+            # 构建转发节点(Node)，注意 content 是一个列表
+            forward_node = Node(
+                uin=event.get_self_id(),
+                name="文件检查报告", # 转发消息的发送者昵称
+                content=[Comp.Reply(id=message_id), Comp.Plain(text=text)] # 转发内容也带上引用和文本
+            )
+            # 直接发送包含 Node 的消息链
+            await event.send(MessageChain([forward_node]))
+        except Exception as e:
+            logger.error(f"[{event.get_group_id()}] 合并转发长消息时出错: {e}", exc_info=True)
+            fallback_text = text[:self.forward_threshold] + "... (消息过长且合并转发失败)"
+            chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=fallback_text)])
+            await event.send(chain)
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
@@ -55,11 +83,8 @@ class GroupFileCheckerPlugin(Star):
         
         logger.info(f"[{group_id}] [阶段一] 开始即时检查...")
         
-        gfs_check_task = asyncio.create_task(self._check_validity_via_gfs(event))
-        preview_task = asyncio.create_task(self._get_text_preview(file_component))
-
-        gfs_check_result = await gfs_check_task
-        preview_text, encoding, is_text = await preview_task
+        gfs_check_result = await self._check_validity_via_gfs(event)
+        preview_text, encoding, is_text = await self._get_text_preview(file_component)
         
         is_gfs_valid = gfs_check_result["is_valid"]
         matched_file = gfs_check_result.get("matched_file")
@@ -70,11 +95,11 @@ class GroupFileCheckerPlugin(Star):
                 success_message = "✅ 您发送的文件初步检查有效。"
                 if is_text and preview_text:
                     preview_text_short = preview_text[:self.preview_length]
-                    success_message += f"\n以下是预览内容：\n{preview_text_short}"
+                    success_message += f"\n格式为 {encoding}，以下是预览：\n{preview_text_short}"
                     if len(preview_text) > self.preview_length: success_message += "..."
+                
                 try:
-                    chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=success_message)])
-                    await event.send(chain)
+                    await self._send_or_forward(event, success_message, message_id)
                     logger.info(f"[{group_id}] [阶段一] 已发送初步检查有效通知。")
                 except Exception as e:
                     logger.error(f"[{group_id}] [阶段一] 回复成功通知时出错: {e}")
@@ -89,36 +114,32 @@ class GroupFileCheckerPlugin(Star):
                 failure_message = "⚠️ 您发送的文件已失效。"
                 if is_text and preview_text:
                     preview_text_short = preview_text[:self.preview_length]
-                    failure_message += f"\n以下是预览内容：\n{preview_text_short}"
+                    failure_message += f"\n机器人仍可获取到以下内容预览：\n{preview_text_short}"
                     if len(preview_text) > self.preview_length: failure_message += "..."
                 
-                chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=failure_message)])
-                await event.send(chain)
+                await self._send_or_forward(event, failure_message, message_id)
                 logger.info(f"[{group_id}] [阶段一] 已发送综合诊断失效通知。")
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}")
             logger.info(f"[{group_id}] 初步检查失败，不进行延时复核。")
 
+
     async def _check_validity_via_gfs(self, event: AstrMessageEvent) -> dict:
+        # ... (此函数内容不变)
         group_id = int(event.get_group_id())
         received_timestamp = time.time() - self.pre_check_delay_seconds
-        
         try:
             assert isinstance(event, AiocqhttpMessageEvent)
             client = event.bot
-            
             root_api_result = await client.api.call_action('get_group_root_files', group_id=group_id)
             if not root_api_result: return {"is_valid": False, "reason": "获取群文件根目录列表失败"}
-
             matched_file = None
             time_tolerance_seconds = 3
-            
             if root_api_result.get('files'):
                 for file_info in root_api_result['files']:
                     if abs(file_info.get('modify_time', 0) - received_timestamp) < time_tolerance_seconds:
                         matched_file = file_info
                         break
-            
             if not matched_file and root_api_result.get('folders'):
                 for folder in root_api_result.get('folders', []):
                     folder_id = folder.get('folder_id')
@@ -130,12 +151,9 @@ class GroupFileCheckerPlugin(Star):
                                 matched_file = file_info
                                 break
                     if matched_file: break
-            
             if not matched_file: return {"is_valid": False, "reason": "未能在根目录及所有一级子目录中匹配到文件"}
-
             file_id = matched_file.get('file_id')
             url_result = await client.api.call_action('get_group_file_url', group_id=group_id, file_id=file_id)
-            
             if url_result and url_result.get('url'):
                 return {"is_valid": True, "matched_file": matched_file}
             else:
@@ -180,8 +198,7 @@ class GroupFileCheckerPlugin(Star):
             logger.error(f"❌ [{group_id}] [阶段二] 文件在延时复核时确认已失效! 原因: {e}")
             try:
                 failure_message = f"❌ 经 {self.check_delay_seconds} 秒后复核，您发送的文件「{file_name}」已失效。"
-                chain = MessageChain([Comp.Reply(id=message_id), Comp.Plain(text=failure_message)])
-                await event.send(chain)
+                await self._send_or_forward(event, failure_message, message_id)
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段二] 回复失效通知时再次发生错误: {send_e}")
 
