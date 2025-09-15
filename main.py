@@ -1,12 +1,8 @@
 import asyncio
 import os
-import base64
 from typing import List, Dict, Optional
-import datetime
 import time
-import json
 import zipfile
-import pyzipper
 import chardet
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 import subprocess
@@ -57,7 +53,6 @@ class GroupFileCheckerPlugin(Star):
         except (UnicodeEncodeError, UnicodeDecodeError):
             return filename
     
-    # === 修复后的函数：只根据文件名进行匹配，取第一个 ===
     async def _search_file_id_by_name(self, event: AstrMessageEvent, file_name: str) -> Optional[str]:
         group_id = int(event.get_group_id())
         self_id = event.get_self_id()
@@ -82,7 +77,6 @@ class GroupFileCheckerPlugin(Star):
         except Exception as e:
             logger.error(f"[{group_id}] 通过文件名搜索文件ID时出错: {e}", exc_info=True)
             return None
-    # ================================================================
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
@@ -126,7 +120,6 @@ class GroupFileCheckerPlugin(Star):
             chain = MessageChain([Reply(id=message_id), Plain(text=fallback_text)])
             await event.send(chain)
 
-    # 修复点：将生成器改为普通协程，并用 return 替代 yield
     async def _repack_and_send_txt(self, event: AstrMessageEvent, original_filename: str, file_component: Comp.File):
         temp_dir = os.path.join(get_astrbot_data_path(), "plugins_data", "file_checker", "temp")
         os.makedirs(temp_dir, exist_ok=True)
@@ -209,7 +202,6 @@ class GroupFileCheckerPlugin(Star):
                 except OSError as e:
                     logger.warning(f"删除临时文件 {renamed_txt_path} 失败: {e}")
     
-    # 修复点：将生成器改为普通协程
     async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File):
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
@@ -254,7 +246,6 @@ class GroupFileCheckerPlugin(Star):
                 
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}")
-            logger.info(f"[{group_id}] 初步检查失败，不进行延时复核。")
 
     async def _check_validity_via_gfs(self, event: AstrMessageEvent, file_id: str) -> bool:
         group_id = int(event.get_group_id())
@@ -359,7 +350,6 @@ class GroupFileCheckerPlugin(Star):
                 is_txt = file_name.lower().endswith('.txt')
                 if self.enable_repack_on_failure and is_txt and preview_text:
                     logger.info("文件在延时复核时失效但内容可读，触发重新打包任务...")
-                    # 修复点：此处不再是生成器
                     await self._repack_and_send_txt(event, file_name, file_component)
 
             except Exception as send_e:
