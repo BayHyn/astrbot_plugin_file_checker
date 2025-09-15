@@ -112,9 +112,8 @@ class GroupFileCheckerPlugin(Star):
 
             with pyzipper.ZipFile(repacked_file_path, 'w', compression=pyzipper.ZIP_DEFLATED) as zf:
                 if self.repack_zip_password:
+                    # 【最终修复】彻底移除不兼容的 AES 加密，pyzipper 将自动使用 ZipCrypto
                     zf.setpassword(self.repack_zip_password.encode('utf-8'))
-                    # 【修复】移除 AES 加密，改用默认的 ZipCrypto
-                    # zf.setencryption(pyzipper.WZ_AES, nbits=256) 
                 zf.write(original_txt_path, arcname=original_filename)
 
             logger.info(f"文件已重新打包至 {repacked_file_path}，准备发送...")
