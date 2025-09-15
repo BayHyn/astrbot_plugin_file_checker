@@ -178,18 +178,30 @@ class GroupFileCheckerPlugin(Star):
     async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File):
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
-
+        
+        # === 新增日志输出，详细记录事件信息 ===
+        sender_id = event.get_sender_id()
+        self_id = event.get_self_id()
+        logger.info(f"[{group_id}] === 开始处理新文件事件 ===")
+        logger.info(f"[{group_id}] 发送者ID: {sender_id}")
+        logger.info(f"[{group_id}] 机器人ID: {self_id}")
+        logger.info(f"[{group_id}] 比较结果 (发送者==机器人): {sender_id == self_id}")
+        logger.info(f"[{group_id}] 文件名: '{file_name}', 文件ID: '{file_id}'")
+        # ======================================
+    
         # 核心逻辑：如果发送者是机器人自己，直接判定为有效
         is_gfs_valid = await self._check_validity_via_gfs(event, file_id)
+        logger.info(f"[{group_id}] 调用 _check_validity_via_gfs 结果: {is_gfs_valid}")
+        
         if event.get_sender_id() == event.get_self_id():
             is_gfs_valid = True
-            logger.info(f"[{group_id}] 机器人发送的文件，直接判定为有效，并走正常流程。")
+            logger.info(f"[{group_id}] 机器人发送的文件，强制 is_gfs_valid 为 True。")
         
         await asyncio.sleep(self.pre_check_delay_seconds)
         logger.info(f"[{group_id}] [阶段一] 开始即时检查: '{file_name}'")
-
+    
         preview_text, preview_extra_info = await self._get_preview_for_file(file_name, file_component)
-
+    
         if is_gfs_valid:
             if self.notify_on_success:
                 success_message = f"✅ 您发送的文件「{file_name}」初步检查有效。"
@@ -209,7 +221,7 @@ class GroupFileCheckerPlugin(Star):
                     failure_message += f"\n{preview_extra_info}，以下是预览：\n{preview_text_short}"
                     if len(preview_text) > self.preview_length: failure_message += "..."
                 await self._send_or_forward(event, failure_message, message_id)
-
+    
                 is_txt = file_name.lower().endswith('.txt')
                 if self.enable_repack_on_failure and is_txt and preview_text:
                     logger.info("文件即时检查失效但内容可读，触发重新打包任务...")
