@@ -60,6 +60,7 @@ class GroupFileCheckerPlugin(Star):
     # === 修复后的函数：只根据文件名进行匹配，取第一个 ===
     async def _search_file_id_by_name(self, event: AstrMessageEvent, file_name: str) -> Optional[str]:
         group_id = int(event.get_group_id())
+        self_id = event.get_self_id()
         
         logger.info(f"[{group_id}] 开始文件ID搜索：目标文件名='{file_name}'")
         
@@ -105,8 +106,8 @@ class GroupFileCheckerPlugin(Star):
                         if not file_component:
                             logger.error("致命错误：无法在高级组件中找到对应的File对象！")
                             return
-                        async for result in self._handle_file_check_flow(event, file_name, file_id, file_component):
-                            yield result
+                        # 修复点：_handle_file_check_flow 应该是一个普通的协程
+                        await self._handle_file_check_flow(event, file_name, file_id, file_component)
                         break
         except Exception as e:
             logger.error(f"【原始方式】处理消息时发生致命错误: {e}", exc_info=True)
@@ -126,6 +127,7 @@ class GroupFileCheckerPlugin(Star):
             chain = MessageChain([Reply(id=message_id), Plain(text=fallback_text)])
             await event.send(chain)
 
+    # 修复点：将生成器改为普通协程，并用 return 替代 yield
     async def _repack_and_send_txt(self, event: AstrMessageEvent, original_filename: str, file_component: Comp.File):
         temp_dir = os.path.join(get_astrbot_data_path(), "plugins_data", "file_checker", "temp")
         os.makedirs(temp_dir, exist_ok=True)
@@ -162,7 +164,7 @@ class GroupFileCheckerPlugin(Star):
             if process.returncode != 0:
                 error_message = stderr.decode('utf-8')
                 logger.error(f"使用 zip 命令打包文件时出错: {error_message}")
-                yield event.plain_result(f"❌ 重新打包失败，错误信息：\n{error_message}")
+                await event.send(MessageChain([Plain(f"❌ 重新打包失败，错误信息：\n{error_message}")]))
                 return
             
             logger.info(f"文件已重新打包至 {repacked_file_path}，准备发送...")
@@ -170,8 +172,9 @@ class GroupFileCheckerPlugin(Star):
             reply_text = "已为您重新打包为ZIP文件发送："
             file_component_to_send = File(file=repacked_file_path, name=new_zip_name)
             
-            yield event.plain_result(reply_text)
+            await event.send(MessageChain([Plain(reply_text)]))
             
+            # 发送文件
             await event.send(MessageChain([file_component_to_send]))
             
             # 等待一小段时间，确保文件上传完成并出现在群文件列表
@@ -187,10 +190,10 @@ class GroupFileCheckerPlugin(Star):
             
         except FileNotFoundError:
             logger.error("重新打包失败：容器内未找到 zip 命令。请安装 zip。")
-            yield event.plain_result("❌ 重新打包失败。容器内未找到 zip 命令，请联系管理员安装。")
+            await event.send(MessageChain([Plain("❌ 重新打包失败。容器内未找到 zip 命令，请联系管理员安装。")]))
         except Exception as e:
             logger.error(f"重新打包并发送文件时出错: {e}", exc_info=True)
-            yield event.plain_result("❌ 重新打包并发送文件失败。")
+            await event.send(MessageChain([Plain("❌ 重新打包并发送文件失败。")]))
         finally:
             if repacked_file_path and os.path.exists(repacked_file_path):
                 async def cleanup_file(path: str):
@@ -209,6 +212,7 @@ class GroupFileCheckerPlugin(Star):
                 except OSError as e:
                     logger.warning(f"删除临时文件 {renamed_txt_path} 失败: {e}")
     
+    # 修复点：将生成器改为普通协程
     async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File):
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
@@ -249,8 +253,8 @@ class GroupFileCheckerPlugin(Star):
                 is_txt = file_name.lower().endswith('.txt')
                 if self.enable_repack_on_failure and is_txt and preview_text:
                     logger.info("文件即时检查失效但内容可读，触发重新打包任务...")
-                    async for result in self._repack_and_send_txt(event, file_name, file_component):
-                        yield result
+                    # 修复点：await 调用
+                    await self._repack_and_send_txt(event, file_name, file_component)
                 
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}")
