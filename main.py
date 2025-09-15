@@ -55,6 +55,25 @@ class GroupFileCheckerPlugin(Star):
             return filename.encode('cp437').decode('gbk')
         except (UnicodeEncodeError, UnicodeDecodeError):
             return filename
+    
+    # === 新增函数：通过文件名和时间戳搜索文件ID ===
+    async def _search_file_id_by_name(self, event: AstrMessageEvent, file_name: str, search_time: float) -> Optional[str]:
+        group_id = int(event.get_group_id())
+        try:
+            assert isinstance(event, AiocqhttpMessageEvent)
+            client = event.bot
+            # 获取群文件列表，这里假设文件数量不多，如果很多需要分页处理
+            file_list = await client.api.call_action('get_group_root_files', group_id=group_id)
+            for file_info in file_list:
+                # 找到文件名匹配且上传时间接近的文件
+                if file_info['file_name'] == file_name and abs(file_info['upload_time'] - search_time) < 60:
+                    logger.info(f"成功通过文件名搜索到文件ID: {file_info['file_id']}")
+                    return file_info['file_id']
+            return None
+        except Exception as e:
+            logger.error(f"通过文件名搜索文件ID时出错: {e}", exc_info=True)
+            return None
+    # ============================================
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
@@ -145,15 +164,18 @@ class GroupFileCheckerPlugin(Star):
             
             yield event.plain_result(reply_text)
             
-            sent_message_chain = await event.send(MessageChain([file_component_to_send]))
+            # 记录发送时间戳
+            send_time = time.time()
+            await event.send(MessageChain([file_component_to_send]))
+
+            # 核心修复：通过文件名和时间戳搜索并获取新文件的ID，然后启动延时复核
+            new_file_id = await self._search_file_id_by_name(event, new_zip_name, send_time)
             
-            if sent_message_chain and len(sent_message_chain) > 0 and isinstance(sent_message_chain[0], File):
-                # 核心修复点：将新文件的ID传递给延时复核
-                new_file_id = sent_message_chain[0].id
+            if new_file_id:
                 logger.info(f"新文件发送成功，ID为 {new_file_id}，已加入延时复核队列。")
                 asyncio.create_task(self._task_delayed_recheck(event, new_zip_name, new_file_id, file_component, None))
             else:
-                logger.warning("未能从发送的消息中获取新文件的ID，无法进行延时复核。")
+                logger.warning("未能通过文件名搜索到新文件的ID，无法进行延时复核。")
             
         except FileNotFoundError:
             logger.error("重新打包失败：容器内未找到 zip 命令。请安装 zip。")
@@ -183,10 +205,12 @@ class GroupFileCheckerPlugin(Star):
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
         
-        # 核心逻辑：如果发送者是机器人自己，直接判定为有效
-        if event.get_sender_id() == event.get_self_id():
-            logger.info(f"[{group_id}] 机器人发送的文件，直接进入延时复核，无即时回复。")
-            return # 直接跳过，因为它将在 _repack_and_send_txt 中处理
+        # 核心修复点：将处理逻辑移至此处，以便在开始前就进行判断
+        sender_id = event.get_sender_id()
+        self_id = event.get_self_id()
+        if sender_id == self_id:
+            logger.info(f"[{group_id}] 机器人发送的文件，直接跳过处理。")
+            return
             
         await asyncio.sleep(self.pre_check_delay_seconds)
         logger.info(f"[{group_id}] [阶段一] 开始即时检查: '{file_name}'")
