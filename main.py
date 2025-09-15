@@ -9,6 +9,7 @@ import zipfile
 import pyzipper
 import chardet
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+import subprocess # 新增导入
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain, MessageEventResult
 from astrbot.api.star import Context, Star, register
@@ -77,7 +78,7 @@ class GroupFileCheckerPlugin(Star):
                             logger.error("致命错误：无法在高级组件中找到对应的File对象！")
                             return
                         async for result in self._handle_file_check_flow(event, file_name, file_id, file_component):
-                             yield result
+                            yield result
                         break
         except Exception as e:
             logger.error(f"【原始方式】处理消息时发生致命错误: {e}", exc_info=True)
@@ -102,6 +103,7 @@ class GroupFileCheckerPlugin(Star):
         os.makedirs(temp_dir, exist_ok=True)
         
         repacked_file_path = None
+        original_txt_path = None
         try:
             logger.info(f"开始为失效文件 {original_filename} 进行重新打包...")
             original_txt_path = await file_component.get_file()
@@ -109,22 +111,37 @@ class GroupFileCheckerPlugin(Star):
             base_name = os.path.splitext(original_filename)[0]
             new_zip_name = f"{base_name}.zip"
             repacked_file_path = os.path.join(temp_dir, f"{int(time.time())}_{new_zip_name}")
-
-            with pyzipper.ZipFile(repacked_file_path, 'w', compression=pyzipper.ZIP_DEFLATED) as zf:
-                if self.repack_zip_password:
-                    # 【最终修复】彻底移除不兼容的 AES 加密，pyzipper 将自动使用 ZipCrypto
-                    zf.setpassword(self.repack_zip_password.encode('utf-8'))
-                zf.write(original_txt_path, arcname=original_filename)
-
+            
+            # 使用 subprocess 调用系统 zip 命令
+            command = ['zip', '-j', repacked_file_path, original_txt_path]
+            if self.repack_zip_password:
+                command.extend(['-P', self.repack_zip_password])
+            
+            logger.info(f"正在执行打包命令: {' '.join(command)}")
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode != 0:
+                error_message = stderr.decode('utf-8')
+                logger.error(f"使用 zip 命令打包文件时出错: {error_message}")
+                yield event.plain_result(f"❌ 重新打包失败，错误信息：\n{error_message}")
+                return
+            
             logger.info(f"文件已重新打包至 {repacked_file_path}，准备发送...")
             
-            message_id = event.message_obj.message_id
             reply_text = "已为您重新打包为ZIP文件发送："
             file_component_to_send = File(file=repacked_file_path, name=new_zip_name)
             
             yield event.plain_result(reply_text)
             yield event.chain_result([file_component_to_send])
             
+        except FileNotFoundError:
+            logger.error("重新打包失败：容器内未找到 zip 命令。请安装 zip。")
+            yield event.plain_result("❌ 重新打包失败。容器内未找到 zip 命令，请联系管理员安装。")
         except Exception as e:
             logger.error(f"重新打包并发送文件时出错: {e}", exc_info=True)
             yield event.plain_result("❌ 重新打包并发送文件失败。")
@@ -139,7 +156,7 @@ class GroupFileCheckerPlugin(Star):
                         logger.warning(f"删除临时文件 {path} 失败: {e}")
                 asyncio.create_task(cleanup_file(repacked_file_path))
 
-            if 'original_txt_path' in locals() and os.path.exists(original_txt_path):
+            if original_txt_path and os.path.exists(original_txt_path):
                 try:
                     os.remove(original_txt_path)
                     logger.info(f"已清理原始临时文件: {original_txt_path}")
@@ -179,7 +196,7 @@ class GroupFileCheckerPlugin(Star):
                 if self.enable_repack_on_failure and is_txt and preview_text:
                     logger.info("文件即时检查失效但内容可读，触发重新打包任务...")
                     async for result in self._repack_and_send_txt(event, file_name, file_component):
-                         yield result
+                        yield result
                 
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}", exc_info=True)
@@ -289,12 +306,12 @@ class GroupFileCheckerPlugin(Star):
                 if self.enable_repack_on_failure and is_txt and preview_text:
                     logger.info("文件在延时复核时失效但内容可读，触发重新打包任务...")
                     async for result in self._repack_and_send_txt(event, file_name, file_component):
-                         yield result
+                        yield result
 
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段二] 回复失效通知时再次发生错误: {send_e}")
         else:
-              logger.info(f"✅ [{group_id}] [阶段二] 文件 '{file_name}' 延时复核通过，保持沉默。")
+            logger.info(f"✅ [{group_id}] [阶段二] 文件 '{file_name}' 延时复核通过，保持沉默。")
 
     async def terminate(self):
         logger.info("插件 [群文件失效检查] 已卸载。")
