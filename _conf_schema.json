@@ -34,5 +34,29 @@
         "hint": "当插件的单条回复（主要是带预览的）超过此字数时，将自动转为合并转发。设置为 0 则禁用此功能。",
         "type": "int",
         "default": 300
+    },
+    "enable_zip_preview": {
+        "description": "启用ZIP文件预览",
+        "hint": "开启后，插件会尝试解压收到的ZIP压缩包，并对其中的TXT文件进行内容预览。",
+        "type": "bool",
+        "default": true
+    },
+    "default_zip_password": {
+        "description": "ZIP文件默认解压密码",
+        "hint": "当直接解压ZIP失败时，会尝试使用此密码进行解压。留空表示不使用密码重试。",
+        "type": "string",
+        "default": ""
+    },
+    "enable_repack_on_failure": {
+        "description": "为失效TXT重新打包发送",
+        "hint": "开启后，当TXT文件初步检查失效但机器人仍能下载时，会自动将其压缩为ZIP文件尝试发送。",
+        "type": "bool",
+        "default": false
+    },
+    "repack_zip_password": {
+        "description": "重新打包ZIP的加密密码",
+        "hint": "为失效TXT重新打包成ZIP文件时使用的加密密码。留空表示不加密。",
+        "type": "string",
+        "default": ""
     }
 }
