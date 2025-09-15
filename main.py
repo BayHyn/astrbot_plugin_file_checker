@@ -76,7 +76,6 @@ class GroupFileCheckerPlugin(Star):
                         if not file_component:
                             logger.error("致命错误：无法在高级组件中找到对应的File对象！")
                             return
-                        # 【重要】将 _handle_file_check_flow 变为异步生成器，并直接 yield 结果
                         async for result in self._handle_file_check_flow(event, file_name, file_id, file_component):
                              yield result
                         break
@@ -114,7 +113,8 @@ class GroupFileCheckerPlugin(Star):
             with pyzipper.ZipFile(repacked_file_path, 'w', compression=pyzipper.ZIP_DEFLATED) as zf:
                 if self.repack_zip_password:
                     zf.setpassword(self.repack_zip_password.encode('utf-8'))
-                    zf.setencryption(pyzipper.WZ_AES, nbits=256)
+                    # 【修复】移除 AES 加密，改用默认的 ZipCrypto
+                    # zf.setencryption(pyzipper.WZ_AES, nbits=256) 
                 zf.write(original_txt_path, arcname=original_filename)
 
             logger.info(f"文件已重新打包至 {repacked_file_path}，准备发送...")
@@ -123,7 +123,6 @@ class GroupFileCheckerPlugin(Star):
             reply_text = "已为您重新打包为ZIP文件发送："
             file_component_to_send = File(file=repacked_file_path, name=new_zip_name)
             
-            # 【重要】使用 yield 返回 MessageEventResult，而不是直接发送
             yield event.plain_result(reply_text)
             yield event.chain_result([file_component_to_send])
             
@@ -148,7 +147,6 @@ class GroupFileCheckerPlugin(Star):
                 except OSError as e:
                     logger.warning(f"删除原始临时文件 {original_txt_path} 失败: {e}")
 
-    # 【重要】将 _handle_file_check_flow 方法改为异步生成器
     async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File):
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
@@ -165,7 +163,6 @@ class GroupFileCheckerPlugin(Star):
                     preview_text_short = preview_text[:self.preview_length]
                     success_message += f"\n{preview_extra_info}，以下是预览：\n{preview_text_short}"
                     if len(preview_text) > self.preview_length: success_message += "..."
-                # 这里发送普通消息，无需 yield
                 await self._send_or_forward(event, success_message, message_id)
             logger.info(f"[{group_id}] 初步检查通过，已加入延时复核队列。")
             asyncio.create_task(self._task_delayed_recheck(event, file_name, file_id, file_component, preview_text))
@@ -182,7 +179,6 @@ class GroupFileCheckerPlugin(Star):
                 is_txt = file_name.lower().endswith('.txt')
                 if self.enable_repack_on_failure and is_txt and preview_text:
                     logger.info("文件即时检查失效但内容可读，触发重新打包任务...")
-                    # 【重要】这里通过 async for 遍历生成器，并将结果 yield 回上层
                     async for result in self._repack_and_send_txt(event, file_name, file_component):
                          yield result
                 
@@ -278,7 +274,6 @@ class GroupFileCheckerPlugin(Star):
                     logger.warning(f"删除临时文件 {local_file_path} 失败: {e}")
         return "", ""
 
-    # 【重要】将 _task_delayed_recheck 方法改为异步生成器
     async def _task_delayed_recheck(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File, preview_text: str):
         await asyncio.sleep(self.check_delay_seconds)
         group_id = int(event.get_group_id())
@@ -289,13 +284,11 @@ class GroupFileCheckerPlugin(Star):
             logger.error(f"❌ [{group_id}] [阶段二] 文件 '{file_name}' 在延时复核时确认已失效!")
             try:
                 failure_message = f"❌ 经 {self.check_delay_seconds} 秒后复核，您发送的文件「{file_name}」已失效。"
-                # 这里发送普通消息，无需 yield
                 await self._send_or_forward(event, failure_message, message_id)
                 
                 is_txt = file_name.lower().endswith('.txt')
                 if self.enable_repack_on_failure and is_txt and preview_text:
                     logger.info("文件在延时复核时失效但内容可读，触发重新打包任务...")
-                    # 【重要】这里通过 async for 遍历生成器，并将结果 yield 回上层
                     async for result in self._repack_and_send_txt(event, file_name, file_component):
                          yield result
 
