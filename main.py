@@ -4,7 +4,7 @@ from typing import List, Dict, Optional
 import datetime
 import time
 import json
-import zipfile  # 导入zipfile库
+import zipfile
 
 # 导入 chardet 库
 import chardet
@@ -48,6 +48,18 @@ class GroupFileCheckerPlugin(Star):
                 return segment
         return None
 
+    # --- 【新增】ZIP文件名乱码修正函数 ---
+    def _fix_zip_filename(self, filename: str) -> str:
+        """
+        尝试修正非标准编码（如GBK）在zipfile库中导致的中文文件名乱码问题。
+        """
+        try:
+            # 这是一个常用的技巧：先用'cp437'编码将错误的字符串转回原始字节，再用'gbk'正确解码。
+            return filename.encode('cp437').decode('gbk')
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            # 如果转换失败，说明它可能不是GBK编码或者已经是正确的UTF-8，返回原样即可。
+            return filename
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
         group_id = int(event.get_group_id())
@@ -64,7 +76,6 @@ class GroupFileCheckerPlugin(Star):
                     file_name = data_dict.get("file")
                     file_id = data_dict.get("file_id")
                     if file_name and file_id:
-                        # 修正了重复的日志打印
                         logger.info(f"【原始方式】成功解析: 文件名='{file_name}', ID='{file_id}'")
                         file_component = self._find_file_component(event)
                         if not file_component:
@@ -151,20 +162,28 @@ class GroupFileCheckerPlugin(Star):
                 if pwd:
                     zf.setpassword(pwd.encode('utf-8'))
                 
-                txt_files = sorted([f for f in zf.namelist() if f.lower().endswith('.txt')])
-                if not txt_files:
+                txt_files_garbled = sorted([f for f in zf.namelist() if f.lower().endswith('.txt')])
+                if not txt_files_garbled:
                     return None
                 
-                first_txt = txt_files[0]
-                return zf.read(first_txt), first_txt
+                first_txt_garbled = txt_files_garbled[0]
+                
+                # 【修改点】对文件名进行乱码修正
+                first_txt_fixed = self._fix_zip_filename(first_txt_garbled)
+                
+                content_bytes = zf.read(first_txt_garbled)
+                return content_bytes, first_txt_fixed
 
+        content_bytes, inner_filename = None, None
         try:
-            content_bytes, inner_filename = _try_unzip()
-        except RuntimeError: # 通常是密码错误
+            result = _try_unzip()
+            if result: content_bytes, inner_filename = result
+        except RuntimeError: 
             if self.default_zip_password:
                 logger.info(f"无密码解压 '{os.path.basename(file_path)}' 失败，尝试使用默认密码...")
                 try:
-                    content_bytes, inner_filename = _try_unzip(self.default_zip_password)
+                    result = _try_unzip(self.default_zip_password)
+                    if result: content_bytes, inner_filename = result
                 except Exception as e:
                     logger.error(f"使用默认密码解压失败: {e}")
                     return "", ""
@@ -185,37 +204,29 @@ class GroupFileCheckerPlugin(Star):
         """根据文件类型获取预览的总入口"""
         is_txt = file_name.lower().endswith('.txt')
         is_zip = self.enable_zip_preview and file_name.lower().endswith('.zip')
-
         local_file_path = None
         try:
-            # 只有需要处理的文件类型才进行下载
             if not (is_txt or is_zip):
                 return "", ""
-
             async with self.download_semaphore:
                 local_file_path = await file_component.get_file()
-
             if is_txt:
                 with open(local_file_path, 'rb') as f:
                     content_bytes = f.read(2048)
                 preview_text, encoding = self._get_preview_from_bytes(content_bytes)
                 extra_info = f"格式为 {encoding}"
                 return preview_text, extra_info
-            
             if is_zip:
                 return await self._get_preview_from_zip(local_file_path)
-
         except Exception as e:
             logger.error(f"获取预览时下载或读取文件失败: {e}", exc_info=True)
             return "", ""
         finally:
-            # 确保临时文件被删除
             if local_file_path and os.path.exists(local_file_path):
                 try:
                     os.remove(local_file_path)
                 except OSError as e:
                     logger.warning(f"删除临时文件 {local_file_path} 失败: {e}")
-        
         return "", ""
 
     async def _task_delayed_recheck(self, event: AstrMessageEvent, file_name: str, file_id: str):
