@@ -96,7 +96,6 @@ class GroupFileCheckerPlugin(Star):
             chain = MessageChain([Reply(id=message_id), Plain(text=fallback_text)])
             await event.send(chain)
 
-    # 【核心修改】将 _repack_and_send_txt 方法改为异步生成器
     async def _repack_and_send_txt(self, event: AstrMessageEvent, original_filename: str, file_component: Comp.File):
         temp_dir = os.path.join(get_astrbot_data_path(), "plugins_data", "file_checker", "temp")
         os.makedirs(temp_dir, exist_ok=True)
@@ -118,11 +117,11 @@ class GroupFileCheckerPlugin(Star):
 
             logger.info(f"文件已重新打包至 {repacked_file_path}，准备发送...")
             
-            # 【重要】发送消息并返回一个 MessageEventResult
             message_id = event.message_obj.message_id
             reply_text = "已为您重新打包为ZIP文件发送："
             file_component_to_send = File(file=repacked_file_path, name=new_zip_name)
             
+            # 【重要】使用 yield 返回 MessageEventResult
             yield event.plain_result(reply_text)
             yield event.chain_result([file_component_to_send])
             
@@ -130,10 +129,9 @@ class GroupFileCheckerPlugin(Star):
             logger.error(f"重新打包并发送文件时出错: {e}", exc_info=True)
             yield event.plain_result("❌ 重新打包并发送文件失败。")
         finally:
-            # 【重要】创建异步任务以延迟清理临时文件
             if repacked_file_path and os.path.exists(repacked_file_path):
                 async def cleanup_file(path: str):
-                    await asyncio.sleep(10) # 延迟清理，确保文件上传完成
+                    await asyncio.sleep(10)
                     try:
                         os.remove(path)
                         logger.info(f"已清理临时文件: {path}")
@@ -141,7 +139,6 @@ class GroupFileCheckerPlugin(Star):
                         logger.warning(f"删除临时文件 {path} 失败: {e}")
                 asyncio.create_task(cleanup_file(repacked_file_path))
 
-            # 始终清理原始文件
             if 'original_txt_path' in locals() and os.path.exists(original_txt_path):
                 try:
                     os.remove(original_txt_path)
@@ -184,7 +181,8 @@ class GroupFileCheckerPlugin(Star):
                     # 【重要】这里调用异步生成器，并遍历结果
                     async for result in self._repack_and_send_txt(event, file_name, file_component):
                         if result:
-                            await event.send(result.messages)
+                            # 【修复】使用 event.send_result 来发送 MessageEventResult
+                            await event.send_result(result)
                 
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}", exc_info=True)
@@ -296,7 +294,8 @@ class GroupFileCheckerPlugin(Star):
                     # 【重要】这里调用异步生成器，并遍历结果
                     async for result in self._repack_and_send_txt(event, file_name, file_component):
                         if result:
-                            await event.send(result.messages)
+                            # 【修复】使用 event.send_result 来发送 MessageEventResult
+                            await event.send_result(result)
 
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段二] 回复失效通知时再次发生错误: {send_e}")
