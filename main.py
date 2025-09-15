@@ -98,41 +98,41 @@ class GroupFileCheckerPlugin(Star):
             chain = MessageChain([Reply(id=message_id), Plain(text=fallback_text)])
             await event.send(chain)
 
-async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File):
-        group_id = int(event.get_group_id())
-        message_id = event.message_obj.message_id
-        await asyncio.sleep(self.pre_check_delay_seconds)
-        logger.info(f"[{group_id}] [阶段一] 开始即时检查: '{file_name}'")
-        is_gfs_valid = await self._check_validity_via_gfs(event, file_id)
-        if is_gfs_valid:
-            if self.notify_on_success:
-                is_txt = file_name.lower().endswith('.txt')
-                success_message = f"✅ 您发送的文件「{file_name}」初步检查有效。"
-                if is_txt:
+    async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File):
+            group_id = int(event.get_group_id())
+            message_id = event.message_obj.message_id
+            await asyncio.sleep(self.pre_check_delay_seconds)
+            logger.info(f"[{group_id}] [阶段一] 开始即时检查: '{file_name}'")
+            is_gfs_valid = await self._check_validity_via_gfs(event, file_id)
+            if is_gfs_valid:
+                if self.notify_on_success:
+                    is_txt = file_name.lower().endswith('.txt')
+                    success_message = f"✅ 您发送的文件「{file_name}」初步检查有效。"
+                    if is_txt:
+                        preview_text, encoding = await self._get_text_preview(file_component)
+                        if preview_text:
+                            preview_text_short = preview_text[:self.preview_length]
+                            success_message += f"\n格式为 {encoding}，以下是预览：\n{preview_text_short}"
+                            if len(preview_text) > self.preview_length: success_message += "..."
+                    await self._send_or_forward(event, success_message, message_id)
+                logger.info(f"[{group_id}] 初步检查通过，已加入延时复核队列。")
+                asyncio.create_task(self._task_delayed_recheck(event, file_name, file_id))
+            else:
+                logger.error(f"❌ [{group_id}] [阶段一] 文件 '{file_name}' 即时检查已失效!")
+                try:
                     preview_text, encoding = await self._get_text_preview(file_component)
+                    
+                    failure_message = f"⚠️ 您发送的文件「{file_name}」已失效。"
+                    
                     if preview_text:
                         preview_text_short = preview_text[:self.preview_length]
-                        success_message += f"\n格式为 {encoding}，以下是预览：\n{preview_text_short}"
-                        if len(preview_text) > self.preview_length: success_message += "..."
-                await self._send_or_forward(event, success_message, message_id)
-            logger.info(f"[{group_id}] 初步检查通过，已加入延时复核队列。")
-            asyncio.create_task(self._task_delayed_recheck(event, file_name, file_id))
-        else:
-            logger.error(f"❌ [{group_id}] [阶段一] 文件 '{file_name}' 即时检查已失效!")
-            try:
-                preview_text, encoding = await self._get_text_preview(file_component)
-                
-                failure_message = f"⚠️ 您发送的文件「{file_name}」已失效。"
-                
-                if preview_text:
-                    preview_text_short = preview_text[:self.preview_length]
-                    failure_message += f"\n格式为 {encoding}，以下是预览：\n{preview_text_short}"
-                    if len(preview_text) > self.preview_length: failure_message += "..."
-                
-                await self._send_or_forward(event, failure_message, message_id)
-            except Exception as send_e:
-                logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}", exc_info=True) # 增加 exc_info=True 以便看到更详细的错误栈
-            logger.info(f"[{group_id}] 初步检查失败，不进行延时复核。")
+                        failure_message += f"\n格式为 {encoding}，以下是预览：\n{preview_text_short}"
+                        if len(preview_text) > self.preview_length: failure_message += "..."
+                    
+                    await self._send_or_forward(event, failure_message, message_id)
+                except Exception as send_e:
+                    logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}", exc_info=True) # 增加 exc_info=True 以便看到更详细的错误栈
+                logger.info(f"[{group_id}] 初步检查失败，不进行延时复核。")
     
     async def _check_validity_via_gfs(self, event: AstrMessageEvent, file_id: str) -> bool:
         group_id = int(event.get_group_id())
