@@ -106,7 +106,6 @@ class GroupFileCheckerPlugin(Star):
                         if not file_component:
                             logger.error("致命错误：无法在高级组件中找到对应的File对象！")
                             return
-                        # 修复点：_handle_file_check_flow 应该是一个普通的协程
                         await self._handle_file_check_flow(event, file_name, file_id, file_component)
                         break
         except Exception as e:
@@ -174,10 +173,8 @@ class GroupFileCheckerPlugin(Star):
             
             await event.send(MessageChain([Plain(reply_text)]))
             
-            # 发送文件
             await event.send(MessageChain([file_component_to_send]))
             
-            # 等待一小段时间，确保文件上传完成并出现在群文件列表
             await asyncio.sleep(2)
             
             new_file_id = await self._search_file_id_by_name(event, new_zip_name)
@@ -253,7 +250,6 @@ class GroupFileCheckerPlugin(Star):
                 is_txt = file_name.lower().endswith('.txt')
                 if self.enable_repack_on_failure and is_txt and preview_text:
                     logger.info("文件即时检查失效但内容可读，触发重新打包任务...")
-                    # 修复点：await 调用
                     await self._repack_and_send_txt(event, file_name, file_component)
                 
             except Exception as send_e:
@@ -363,8 +359,8 @@ class GroupFileCheckerPlugin(Star):
                 is_txt = file_name.lower().endswith('.txt')
                 if self.enable_repack_on_failure and is_txt and preview_text:
                     logger.info("文件在延时复核时失效但内容可读，触发重新打包任务...")
-                    async for result in self._repack_and_send_txt(event, file_name, file_component):
-                        yield result
+                    # 修复点：此处不再是生成器
+                    await self._repack_and_send_txt(event, file_name, file_component)
 
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段二] 回复失效通知时再次发生错误: {send_e}")
