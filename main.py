@@ -56,27 +56,35 @@ class GroupFileCheckerPlugin(Star):
         except (UnicodeEncodeError, UnicodeDecodeError):
             return filename
     
-    # === 修复后的函数：通过文件名和时间戳搜索文件ID ===
+    # === 修复后的函数：添加详细日志输出 ===
     async def _search_file_id_by_name(self, event: AstrMessageEvent, file_name: str, search_time: float) -> Optional[str]:
         group_id = int(event.get_group_id())
+        
+        logger.info(f"[{group_id}] 开始文件ID搜索：目标文件名='{file_name}', 发送时间={search_time}")
+        
         try:
             assert isinstance(event, AiocqhttpMessageEvent)
             client = event.bot
             file_list = await client.api.call_action('get_group_root_files', group_id=group_id)
             
+            logger.info(f"[{group_id}] get_group_root_files API原始返回内容: {json.dumps(file_list, ensure_ascii=False)}")
+            
             if not isinstance(file_list, dict) or 'files' not in file_list:
                 logger.warning("get_group_root_files API调用返回了意料之外的格式。")
                 return None
             
-            # 遍历API返回的文件列表
             for file_info in file_list.get('files', []):
-                # 检查文件名和上传时间是否匹配
+                # 新增日志：打印当前遍历到的文件信息
+                logger.info(f"[{group_id}] 正在比对文件：文件名='{file_info.get('file_name')}', 上传时间={file_info.get('upload_time')}")
+                
                 if file_info.get('file_name') == file_name and abs(file_info.get('upload_time', 0) - search_time) < 60:
-                    logger.info(f"成功通过文件名搜索到文件ID: {file_info.get('file_id')}")
+                    logger.info(f"[{group_id}] 成功匹配！文件ID: {file_info.get('file_id')}")
                     return file_info.get('file_id')
+            
+            logger.info(f"[{group_id}] 未找到匹配文件。")
             return None
         except Exception as e:
-            logger.error(f"通过文件名搜索文件ID时出错: {e}", exc_info=True)
+            logger.error(f"[{group_id}] 通过文件名搜索文件ID时出错: {e}", exc_info=True)
             return None
     # ================================================================
 
@@ -177,9 +185,8 @@ class GroupFileCheckerPlugin(Star):
             
             new_file_id = None
             
-            if not new_file_id:
-                logger.warning("正在尝试通过文件名搜索新文件的ID。")
-                new_file_id = await self._search_file_id_by_name(event, new_zip_name, send_time)
+            logger.warning("正在尝试通过文件名搜索新文件的ID。")
+            new_file_id = await self._search_file_id_by_name(event, new_zip_name, send_time)
             
             if new_file_id:
                 logger.info(f"新文件发送成功，ID为 {new_file_id}，已加入延时复核队列。")
