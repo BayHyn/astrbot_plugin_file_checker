@@ -10,6 +10,7 @@ import pyzipper
 import chardet
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 import subprocess
+from aiocqhttp.exceptions import ActionFailed
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain, MessageEventResult
 from astrbot.api.star import Context, Star, register
@@ -56,28 +57,22 @@ class GroupFileCheckerPlugin(Star):
         except (UnicodeEncodeError, UnicodeDecodeError):
             return filename
     
-    # === 修复后的函数：添加详细日志输出 ===
-    async def _search_file_id_by_name(self, event: AstrMessageEvent, file_name: str, search_time: float) -> Optional[str]:
+    # === 修复后的函数：只根据文件名进行匹配，取第一个 ===
+    async def _search_file_id_by_name(self, event: AstrMessageEvent, file_name: str) -> Optional[str]:
         group_id = int(event.get_group_id())
         
-        logger.info(f"[{group_id}] 开始文件ID搜索：目标文件名='{file_name}', 发送时间={search_time}")
+        logger.info(f"[{group_id}] 开始文件ID搜索：目标文件名='{file_name}'")
         
         try:
-            assert isinstance(event, AiocqhttpMessageEvent)
             client = event.bot
             file_list = await client.api.call_action('get_group_root_files', group_id=group_id)
-            
-            logger.info(f"[{group_id}] get_group_root_files API原始返回内容: {json.dumps(file_list, ensure_ascii=False)}")
             
             if not isinstance(file_list, dict) or 'files' not in file_list:
                 logger.warning("get_group_root_files API调用返回了意料之外的格式。")
                 return None
             
             for file_info in file_list.get('files', []):
-                # 新增日志：打印当前遍历到的文件信息
-                logger.info(f"[{group_id}] 正在比对文件：文件名='{file_info.get('file_name')}', 上传时间={file_info.get('upload_time')}")
-                
-                if file_info.get('file_name') == file_name and abs(file_info.get('upload_time', 0) - search_time) < 60:
+                if file_info.get('file_name') == file_name:
                     logger.info(f"[{group_id}] 成功匹配！文件ID: {file_info.get('file_id')}")
                     return file_info.get('file_id')
             
@@ -177,16 +172,12 @@ class GroupFileCheckerPlugin(Star):
             
             yield event.plain_result(reply_text)
             
-            send_time = time.time()
             await event.send(MessageChain([file_component_to_send]))
             
             # 等待一小段时间，确保文件上传完成并出现在群文件列表
             await asyncio.sleep(2)
             
-            new_file_id = None
-            
-            logger.warning("正在尝试通过文件名搜索新文件的ID。")
-            new_file_id = await self._search_file_id_by_name(event, new_zip_name, send_time)
+            new_file_id = await self._search_file_id_by_name(event, new_zip_name)
             
             if new_file_id:
                 logger.info(f"新文件发送成功，ID为 {new_file_id}，已加入延时复核队列。")
