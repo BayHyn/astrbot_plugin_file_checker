@@ -1,6 +1,6 @@
 import asyncio
 import os
-import base64 # 新增导入 base64
+import base64
 from typing import List, Dict, Optional
 import datetime
 import time
@@ -116,17 +116,13 @@ class GroupFileCheckerPlugin(Star):
 
             logger.info(f"文件已重新打包至 {new_zip_path}，准备发送...")
             
-            # --- 【重大修改】使用 Base64 编码发送文件 ---
-            with open(new_zip_path, 'rb') as f:
-                base64_data = base64.b64encode(f.read()).decode()
-
+            # --- 【重大修改】回归使用 Comp.File 组件发送本地文件 ---
             message_id = event.message_obj.message_id
             reply_text = "已为您重新打包为ZIP文件发送："
             chain = MessageChain([
                 Reply(id=message_id),
                 Plain(text=reply_text),
-                # 使用 'file' 参数来发送 Base64 编码的数据
-                Comp.File(file=f"base64://{base64_data}", name=new_zip_name)
+                Comp.File(file=new_zip_path, name=new_zip_name)
             ])
             await event.send(chain)
             logger.info("重新打包的文件发送成功。")
@@ -141,7 +137,6 @@ class GroupFileCheckerPlugin(Star):
                     except OSError:
                         pass
 
-    # ... 其他方法（_handle_file_check_flow, _check_validity_via_gfs, 等）保持不变 ...
     async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File):
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
