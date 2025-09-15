@@ -109,22 +109,17 @@ class GroupFileCheckerPlugin(Star):
         try:
             logger.info(f"开始为失效文件 {original_filename} 进行重新打包...")
             
-            # 1. 获取原始文件
             original_txt_path = await file_component.get_file()
             
-            # 2. 将临时文件重命名为原始文件名
             renamed_txt_path = os.path.join(temp_dir, original_filename)
-            # 如果目标文件存在，先删除，防止重命名失败
             if os.path.exists(renamed_txt_path):
                 os.remove(renamed_txt_path)
             os.rename(original_txt_path, renamed_txt_path)
 
-            # 3. 设置打包后的文件路径
             base_name = os.path.splitext(original_filename)[0]
             new_zip_name = f"{base_name}.zip"
             repacked_file_path = os.path.join(temp_dir, f"{int(time.time())}_{new_zip_name}")
 
-            # 4. 使用 subprocess 调用系统 zip 命令
             command = ['zip', '-j', repacked_file_path, renamed_txt_path]
             if self.repack_zip_password:
                 command.extend(['-P', self.repack_zip_password])
@@ -149,7 +144,22 @@ class GroupFileCheckerPlugin(Star):
             file_component_to_send = File(file=repacked_file_path, name=new_zip_name)
             
             yield event.plain_result(reply_text)
-            yield event.chain_result([file_component_to_send])
+            
+            # --- 核心修改：发送文件并获取其ID，然后启动延时复核任务 ---
+            # 发送文件，并捕获回复以获取新文件的ID
+            sent_message_chain = await event.send(MessageChain([file_component_to_send]))
+            if sent_message_chain:
+                # 从发送的MessageChain中解析新文件的ID
+                new_file_id = sent_message_chain[0].id if isinstance(sent_message_chain[0], File) else None
+                if new_file_id:
+                    logger.info(f"新文件发送成功，ID为 {new_file_id}，已加入延时复核队列。")
+                    # 启动针对新文件的延时复核任务
+                    asyncio.create_task(self._task_delayed_recheck(event, new_zip_name, new_file_id, file_component, None))
+                else:
+                    logger.warning("未能从发送的消息中获取新文件的ID，无法进行延时复核。")
+            else:
+                logger.warning("文件发送失败，无法进行延时复核。")
+            # -------------------------------------------------------------
             
         except FileNotFoundError:
             logger.error("重新打包失败：容器内未找到 zip 命令。请安装 zip。")
@@ -179,29 +189,19 @@ class GroupFileCheckerPlugin(Star):
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
         
-        # === 新增日志输出，详细记录事件信息 ===
-        sender_id = event.get_sender_id()
-        self_id = event.get_self_id()
-        logger.info(f"[{group_id}] === 开始处理新文件事件 ===")
-        logger.info(f"[{group_id}] 发送者ID: {sender_id}")
-        logger.info(f"[{group_id}] 机器人ID: {self_id}")
-        logger.info(f"[{group_id}] 比较结果 (发送者==机器人): {sender_id == self_id}")
-        logger.info(f"[{group_id}] 文件名: '{file_name}', 文件ID: '{file_id}'")
-        # ======================================
-    
         # 核心逻辑：如果发送者是机器人自己，直接判定为有效
-        is_gfs_valid = await self._check_validity_via_gfs(event, file_id)
-        logger.info(f"[{group_id}] 调用 _check_validity_via_gfs 结果: {is_gfs_valid}")
-        
         if event.get_sender_id() == event.get_self_id():
-            is_gfs_valid = True
-            logger.info(f"[{group_id}] 机器人发送的文件，强制 is_gfs_valid 为 True。")
-        
+            logger.info(f"[{group_id}] 机器人发送的文件，直接进入延时复核，无即时回复。")
+            # 直接跳过，因为它将在 _repack_and_send_txt 中处理
+            return 
+            
         await asyncio.sleep(self.pre_check_delay_seconds)
         logger.info(f"[{group_id}] [阶段一] 开始即时检查: '{file_name}'")
-    
+
+        is_gfs_valid = await self._check_validity_via_gfs(event, file_id)
+
         preview_text, preview_extra_info = await self._get_preview_for_file(file_name, file_component)
-    
+
         if is_gfs_valid:
             if self.notify_on_success:
                 success_message = f"✅ 您发送的文件「{file_name}」初步检查有效。"
@@ -221,7 +221,7 @@ class GroupFileCheckerPlugin(Star):
                     failure_message += f"\n{preview_extra_info}，以下是预览：\n{preview_text_short}"
                     if len(preview_text) > self.preview_length: failure_message += "..."
                 await self._send_or_forward(event, failure_message, message_id)
-    
+
                 is_txt = file_name.lower().endswith('.txt')
                 if self.enable_repack_on_failure and is_txt and preview_text:
                     logger.info("文件即时检查失效但内容可读，触发重新打包任务...")
