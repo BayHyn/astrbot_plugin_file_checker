@@ -5,6 +5,7 @@ import datetime
 import time
 import json
 import zipfile
+import pyzipper # --- 【新增】导入 pyzipper 库 ---
 
 # 导入 chardet 库
 import chardet
@@ -35,29 +36,27 @@ class GroupFileCheckerPlugin(Star):
         self.check_delay_seconds: int = self.config.get("check_delay_seconds", 300)
         self.preview_length: int = self.config.get("preview_length", 200)
         self.forward_threshold: int = self.config.get("forward_threshold", 300)
-        # --- 读取新功能配置 ---
+        # --- 读取ZIP预览功能配置 ---
         self.enable_zip_preview: bool = self.config.get("enable_zip_preview", True)
         self.default_zip_password: str = self.config.get("default_zip_password", "")
+        # --- 【新增】读取TXT重新打包功能配置 ---
+        self.enable_repack_on_failure: bool = self.config.get("enable_repack_on_failure", False)
+        self.repack_zip_password: str = self.config.get("repack_zip_password", "")
         
         self.download_semaphore = asyncio.Semaphore(5)
         logger.info("插件 [群文件失效检查] 已加载。")
 
+    # ... _find_file_component, _fix_zip_filename, on_group_message, _send_or_forward 保持不变 ...
     def _find_file_component(self, event: AstrMessageEvent) -> Optional[Comp.File]:
         for segment in event.get_messages():
             if isinstance(segment, Comp.File):
                 return segment
         return None
 
-    # --- 【新增】ZIP文件名乱码修正函数 ---
     def _fix_zip_filename(self, filename: str) -> str:
-        """
-        尝试修正非标准编码（如GBK）在zipfile库中导致的中文文件名乱码问题。
-        """
         try:
-            # 这是一个常用的技巧：先用'cp437'编码将错误的字符串转回原始字节，再用'gbk'正确解码。
             return filename.encode('cp437').decode('gbk')
         except (UnicodeEncodeError, UnicodeDecodeError):
-            # 如果转换失败，说明它可能不是GBK编码或者已经是正确的UTF-8，返回原样即可。
             return filename
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
@@ -101,6 +100,57 @@ class GroupFileCheckerPlugin(Star):
             chain = MessageChain([Reply(id=message_id), Plain(text=fallback_text)])
             await event.send(chain)
 
+    async def _repack_and_send_txt(self, event: AstrMessageEvent, original_filename: str, file_component: Comp.File):
+        temp_files_to_clean = []
+        try:
+            logger.info(f"开始为失效文件 {original_filename} 进行重新打包...")
+            # 1. 下载原始TXT文件
+            original_txt_path = await file_component.get_file()
+            temp_files_to_clean.append(original_txt_path)
+            
+            # 2. 准备新的ZIP文件名和路径
+            base_name = os.path.splitext(original_filename)[0]
+            # --- 【修改点1】移除 _repacked 后缀 ---
+            new_zip_name = f"{base_name}.zip"
+            # 建议将临时文件放在 bot 的 temp 目录下，如果不存在则使用当前目录
+            temp_dir = getattr(self.context, "temp_dir", ".")
+            new_zip_path = os.path.join(temp_dir, f"{int(time.time())}_{new_zip_name}")
+            temp_files_to_clean.append(new_zip_path)
+
+            # 3. 使用 pyzipper 创建压缩包
+            with pyzipper.ZipFile(new_zip_path, 'w', compression=pyzipper.ZIP_DEFLATED) as zf:
+                # 检查是否需要加密
+                if self.repack_zip_password:
+                    zf.setpassword(self.repack_zip_password.encode('utf-8'))
+                    zf.setencryption(pyzipper.WZ_AES, nbits=256)
+                    
+                # 将下载的TXT文件写入ZIP，arcname 用于指定在ZIP中的文件名
+                zf.write(original_txt_path, arcname=original_filename)
+
+            logger.info(f"文件已重新打包至 {new_zip_path}，准备发送...")
+            # 4. 构建消息链并发送
+            message_id = event.message_obj.message_id
+            reply_text = "已为您重新打包为ZIP文件发送："
+            # 根据文档，使用 Comp.File 发送本地文件
+            chain = MessageChain([
+                Reply(id=message_id),
+                Plain(text=reply_text),
+                Comp.File(file=new_zip_path, name=new_zip_name)
+            ])
+            await event.send(chain)
+            logger.info("重新打包的文件发送成功。")
+
+        except Exception as e:
+            logger.error(f"重新打包并发送文件时出错: {e}", exc_info=True)
+        finally:
+            # 5. 清理所有临时文件
+            for f_path in temp_files_to_clean:
+                if os.path.exists(f_path):
+                    try:
+                        os.remove(f_path)
+                    except OSError:
+                        pass
+
     async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File):
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
@@ -119,20 +169,30 @@ class GroupFileCheckerPlugin(Star):
                     if len(preview_text) > self.preview_length: success_message += "..."
                 await self._send_or_forward(event, success_message, message_id)
             logger.info(f"[{group_id}] 初步检查通过，已加入延时复核队列。")
-            asyncio.create_task(self._task_delayed_recheck(event, file_name, file_id))
+            # --- 【修改点3】将 file_component 和 preview_text 传递给延时复核任务 ---
+            asyncio.create_task(self._task_delayed_recheck(event, file_name, file_id, file_component, preview_text))
         else:
             logger.error(f"❌ [{group_id}] [阶段一] 文件 '{file_name}' 即时检查已失效!")
             try:
+                # --- 【修改点2】先发送失效提示文本 ---
                 failure_message = f"⚠️ 您发送的文件「{file_name}」已失效。"
                 if preview_text:
                     preview_text_short = preview_text[:self.preview_length]
                     failure_message += f"\n{preview_extra_info}，机器人仍可获取预览：\n{preview_text_short}"
                     if len(preview_text) > self.preview_length: failure_message += "..."
                 await self._send_or_forward(event, failure_message, message_id)
+
+                # --- 【修改点2】再判断是否需要重新打包并发送文件 ---
+                is_txt = file_name.lower().endswith('.txt')
+                if self.enable_repack_on_failure and is_txt and preview_text:
+                    logger.info("文件即时检查失效但内容可读，触发重新打包任务...")
+                    await self._repack_and_send_txt(event, file_name, file_component)
+                
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}", exc_info=True)
             logger.info(f"[{group_id}] 初步检查失败，不进行延时复核。")
 
+    # ... _check_validity_via_gfs, _get_preview_from_bytes, _get_preview_from_zip, _get_preview_for_file, _task_delayed_recheck, terminate 等函数保持不变 ...
     async def _check_validity_via_gfs(self, event: AstrMessageEvent, file_id: str) -> bool:
         group_id = int(event.get_group_id())
         try:
@@ -144,7 +204,6 @@ class GroupFileCheckerPlugin(Star):
             return False
 
     def _get_preview_from_bytes(self, content_bytes: bytes) -> tuple[str, str]:
-        """从字节流中获取文本预览和编码"""
         try:
             detection = chardet.detect(content_bytes)
             encoding = detection.get('encoding', 'utf-8') or 'utf-8'
@@ -156,21 +215,15 @@ class GroupFileCheckerPlugin(Star):
             return "", "未知"
             
     async def _get_preview_from_zip(self, file_path: str) -> tuple[str, str]:
-        """尝试从ZIP文件中解压并获取第一个TXT文件的预览"""
         def _try_unzip(pwd: Optional[str] = None) -> Optional[tuple[bytes, str]]:
             with zipfile.ZipFile(file_path, 'r') as zf:
                 if pwd:
                     zf.setpassword(pwd.encode('utf-8'))
-                
                 txt_files_garbled = sorted([f for f in zf.namelist() if f.lower().endswith('.txt')])
                 if not txt_files_garbled:
                     return None
-                
                 first_txt_garbled = txt_files_garbled[0]
-                
-                # 【修改点】对文件名进行乱码修正
                 first_txt_fixed = self._fix_zip_filename(first_txt_garbled)
-                
                 content_bytes = zf.read(first_txt_garbled)
                 return content_bytes, first_txt_fixed
 
@@ -178,7 +231,7 @@ class GroupFileCheckerPlugin(Star):
         try:
             result = _try_unzip()
             if result: content_bytes, inner_filename = result
-        except RuntimeError: 
+        except RuntimeError:
             if self.default_zip_password:
                 logger.info(f"无密码解压 '{os.path.basename(file_path)}' 失败，尝试使用默认密码...")
                 try:
@@ -201,7 +254,6 @@ class GroupFileCheckerPlugin(Star):
         return preview_text, extra_info
 
     async def _get_preview_for_file(self, file_name: str, file_component: Comp.File) -> tuple[str, str]:
-        """根据文件类型获取预览的总入口"""
         is_txt = file_name.lower().endswith('.txt')
         is_zip = self.enable_zip_preview and file_name.lower().endswith('.zip')
         local_file_path = None
@@ -229,8 +281,8 @@ class GroupFileCheckerPlugin(Star):
                     logger.warning(f"删除临时文件 {local_file_path} 失败: {e}")
         return "", ""
 
-    async def _task_delayed_recheck(self, event: AstrMessageEvent, file_name: str, file_id: str):
-        # (此函数保持不变)
+    # --- 【修改点4】函数签名新增 file_component 和 preview_text ---
+    async def _task_delayed_recheck(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File, preview_text: str):
         await asyncio.sleep(self.check_delay_seconds)
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
@@ -239,12 +291,20 @@ class GroupFileCheckerPlugin(Star):
         if not is_still_valid:
             logger.error(f"❌ [{group_id}] [阶段二] 文件 '{file_name}' 在延时复核时确认已失效!")
             try:
+                # 1. 先发送失效提示文本
                 failure_message = f"❌ 经 {self.check_delay_seconds} 秒后复核，您发送的文件「{file_name}」已失效。"
                 await self._send_or_forward(event, failure_message, message_id)
+                
+                # 2. 再判断是否需要重新打包并发送文件
+                is_txt = file_name.lower().endswith('.txt')
+                if self.enable_repack_on_failure and is_txt and preview_text:
+                    logger.info("文件在延时复核时失效但内容可读，触发重新打包任务...")
+                    await self._repack_and_send_txt(event, file_name, file_component)
+
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段二] 回复失效通知时再次发生错误: {send_e}")
         else:
-             logger.info(f"✅ [{group_id}] [阶段二] 文件 '{file_name}' 延时复核通过，保持沉默。")
+              logger.info(f"✅ [{group_id}] [阶段二] 文件 '{file_name}' 延时复核通过，保持沉默。")
 
     async def terminate(self):
         logger.info("插件 [群文件失效检查] 已卸载。")
