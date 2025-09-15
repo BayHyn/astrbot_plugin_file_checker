@@ -145,21 +145,15 @@ class GroupFileCheckerPlugin(Star):
             
             yield event.plain_result(reply_text)
             
-            # --- 核心修改：发送文件并获取其ID，然后启动延时复核任务 ---
-            # 发送文件，并捕获回复以获取新文件的ID
             sent_message_chain = await event.send(MessageChain([file_component_to_send]))
-            if sent_message_chain:
-                # 从发送的MessageChain中解析新文件的ID
-                new_file_id = sent_message_chain[0].id if isinstance(sent_message_chain[0], File) else None
-                if new_file_id:
-                    logger.info(f"新文件发送成功，ID为 {new_file_id}，已加入延时复核队列。")
-                    # 启动针对新文件的延时复核任务
-                    asyncio.create_task(self._task_delayed_recheck(event, new_zip_name, new_file_id, file_component, None))
-                else:
-                    logger.warning("未能从发送的消息中获取新文件的ID，无法进行延时复核。")
+            
+            if sent_message_chain and len(sent_message_chain) > 0 and isinstance(sent_message_chain[0], File):
+                # 核心修复点：将新文件的ID传递给延时复核
+                new_file_id = sent_message_chain[0].id
+                logger.info(f"新文件发送成功，ID为 {new_file_id}，已加入延时复核队列。")
+                asyncio.create_task(self._task_delayed_recheck(event, new_zip_name, new_file_id, file_component, None))
             else:
-                logger.warning("文件发送失败，无法进行延时复核。")
-            # -------------------------------------------------------------
+                logger.warning("未能从发送的消息中获取新文件的ID，无法进行延时复核。")
             
         except FileNotFoundError:
             logger.error("重新打包失败：容器内未找到 zip 命令。请安装 zip。")
@@ -192,8 +186,7 @@ class GroupFileCheckerPlugin(Star):
         # 核心逻辑：如果发送者是机器人自己，直接判定为有效
         if event.get_sender_id() == event.get_self_id():
             logger.info(f"[{group_id}] 机器人发送的文件，直接进入延时复核，无即时回复。")
-            # 直接跳过，因为它将在 _repack_and_send_txt 中处理
-            return 
+            return # 直接跳过，因为它将在 _repack_and_send_txt 中处理
             
         await asyncio.sleep(self.pre_check_delay_seconds)
         logger.info(f"[{group_id}] [阶段一] 开始即时检查: '{file_name}'")
