@@ -98,7 +98,7 @@ class GroupFileCheckerPlugin(Star):
             chain = MessageChain([Reply(id=message_id), Plain(text=fallback_text)])
             await event.send(chain)
 
-    async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File):
+async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File):
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
         await asyncio.sleep(self.pre_check_delay_seconds)
@@ -120,15 +120,18 @@ class GroupFileCheckerPlugin(Star):
         else:
             logger.error(f"❌ [{group_id}] [阶段一] 文件 '{file_name}' 即时检查已失效!")
             try:
-                preview_text, encoding, is_text = await self._get_text_preview(file_component)
-                failure_message = f"⚠️ 您发送的文件「{file_name}」已失效（对其他群友可能无法下载）。"
-                if is_text and preview_text:
+                preview_text, encoding = await self._get_text_preview(file_component)
+                
+                failure_message = f"⚠️ 您发送的文件「{file_name}」已失效。"
+                
+                if preview_text:
                     preview_text_short = preview_text[:self.preview_length]
-                    failure_message += f"\n机器人仍可获取到以下内容预览：\n{preview_text_short}"
+                    failure_message += f"\n格式为 {encoding}，以下是预览：\n{preview_text_short}"
                     if len(preview_text) > self.preview_length: failure_message += "..."
+                
                 await self._send_or_forward(event, failure_message, message_id)
             except Exception as send_e:
-                logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}")
+                logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}", exc_info=True) # 增加 exc_info=True 以便看到更详细的错误栈
             logger.info(f"[{group_id}] 初步检查失败，不进行延时复核。")
     
     async def _check_validity_via_gfs(self, event: AstrMessageEvent, file_id: str) -> bool:
