@@ -179,17 +179,14 @@ class GroupFileCheckerPlugin(Star):
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
 
-        # 核心逻辑：如果是机器人自己发送的文件，直接进入延时复核
+        # 核心逻辑：如果发送者是机器人自己，直接判定为有效
+        is_gfs_valid = await self._check_validity_via_gfs(event, file_id)
         if event.get_sender_id() == event.get_self_id():
-            logger.info(f"[{group_id}] 机器人发送的文件，直接进入延时复核，无即时回复。")
-            # 机器人自己发送的文件无需预览文本，直接将 preview_text 设为 None
-            asyncio.create_task(self._task_delayed_recheck(event, file_name, file_id, file_component, None))
-            return # 立即结束，不执行后续代码
-            
+            is_gfs_valid = True
+            logger.info(f"[{group_id}] 机器人发送的文件，直接判定为有效，并走正常流程。")
+        
         await asyncio.sleep(self.pre_check_delay_seconds)
         logger.info(f"[{group_id}] [阶段一] 开始即时检查: '{file_name}'")
-
-        is_gfs_valid = await self._check_validity_via_gfs(event, file_id)
 
         preview_text, preview_extra_info = await self._get_preview_for_file(file_name, file_component)
 
@@ -209,7 +206,7 @@ class GroupFileCheckerPlugin(Star):
                 failure_message = f"⚠️ 您发送的文件「{file_name}」已失效。"
                 if preview_text:
                     preview_text_short = preview_text[:self.preview_length]
-                    failure_message += f"\n{preview_extra_info}，机器人仍可获取预览：\n{preview_text_short}"
+                    failure_message += f"\n{preview_extra_info}，以下是预览：\n{preview_text_short}"
                     if len(preview_text) > self.preview_length: failure_message += "..."
                 await self._send_or_forward(event, failure_message, message_id)
 
