@@ -8,19 +8,20 @@ import json
 import zipfile
 import pyzipper
 import chardet
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
-from astrbot.api.event import filter, AstrMessageEvent, MessageChain
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
-from astrbot.api.message_components import Reply, Plain, Node
+from astrbot.api.message_components import Reply, Plain, Node, File
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
 @register(
     "astrbot_plugin_file_checker",
     "Foolllll",
     "群文件失效检查",
-    "1.3",
+    "1.3", # 版本号提升
     "https://github.com/Foolllll-J/astrbot_plugin_file_checker"
 )
 class GroupFileCheckerPlugin(Star):
@@ -95,47 +96,58 @@ class GroupFileCheckerPlugin(Star):
             chain = MessageChain([Reply(id=message_id), Plain(text=fallback_text)])
             await event.send(chain)
 
+    # 【核心修改】将 _repack_and_send_txt 方法改为异步生成器
     async def _repack_and_send_txt(self, event: AstrMessageEvent, original_filename: str, file_component: Comp.File):
-        temp_files_to_clean = []
+        temp_dir = os.path.join(get_astrbot_data_path(), "plugins_data", "file_checker", "temp")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        repacked_file_path = None
         try:
             logger.info(f"开始为失效文件 {original_filename} 进行重新打包...")
             original_txt_path = await file_component.get_file()
-            temp_files_to_clean.append(original_txt_path)
             
             base_name = os.path.splitext(original_filename)[0]
             new_zip_name = f"{base_name}.zip"
-            temp_dir = getattr(self.context, "temp_dir", os.getcwd())
-            new_zip_path = os.path.abspath(os.path.join(temp_dir, f"{int(time.time())}_{new_zip_name}"))
-            temp_files_to_clean.append(new_zip_path)
+            repacked_file_path = os.path.join(temp_dir, f"{int(time.time())}_{new_zip_name}")
 
-            with pyzipper.ZipFile(new_zip_path, 'w', compression=pyzipper.ZIP_DEFLATED) as zf:
+            with pyzipper.ZipFile(repacked_file_path, 'w', compression=pyzipper.ZIP_DEFLATED) as zf:
                 if self.repack_zip_password:
                     zf.setpassword(self.repack_zip_password.encode('utf-8'))
                     zf.setencryption(pyzipper.WZ_AES, nbits=256)
                 zf.write(original_txt_path, arcname=original_filename)
 
-            logger.info(f"文件已重新打包至 {new_zip_path}，准备发送...")
+            logger.info(f"文件已重新打包至 {repacked_file_path}，准备发送...")
             
-            # --- 【重大修改】回归使用 Comp.File 组件发送本地文件 ---
+            # 【重要】发送消息并返回一个 MessageEventResult
             message_id = event.message_obj.message_id
             reply_text = "已为您重新打包为ZIP文件发送："
-            chain = MessageChain([
-                Reply(id=message_id),
-                Plain(text=reply_text),
-                Comp.File(file=new_zip_path, name=new_zip_name)
-            ])
-            await event.send(chain)
-            logger.info("重新打包的文件发送成功。")
-
+            file_component_to_send = File(file=repacked_file_path, name=new_zip_name)
+            
+            yield event.plain_result(reply_text)
+            yield event.chain_result([file_component_to_send])
+            
         except Exception as e:
             logger.error(f"重新打包并发送文件时出错: {e}", exc_info=True)
+            yield event.plain_result("❌ 重新打包并发送文件失败。")
         finally:
-            for f_path in temp_files_to_clean:
-                if os.path.exists(f_path):
+            # 【重要】创建异步任务以延迟清理临时文件
+            if repacked_file_path and os.path.exists(repacked_file_path):
+                async def cleanup_file(path: str):
+                    await asyncio.sleep(10) # 延迟清理，确保文件上传完成
                     try:
-                        os.remove(f_path)
-                    except OSError:
-                        pass
+                        os.remove(path)
+                        logger.info(f"已清理临时文件: {path}")
+                    except OSError as e:
+                        logger.warning(f"删除临时文件 {path} 失败: {e}")
+                asyncio.create_task(cleanup_file(repacked_file_path))
+
+            # 始终清理原始文件
+            if 'original_txt_path' in locals() and os.path.exists(original_txt_path):
+                try:
+                    os.remove(original_txt_path)
+                    logger.info(f"已清理原始临时文件: {original_txt_path}")
+                except OSError as e:
+                    logger.warning(f"删除原始临时文件 {original_txt_path} 失败: {e}")
 
     async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File):
         group_id = int(event.get_group_id())
@@ -169,7 +181,10 @@ class GroupFileCheckerPlugin(Star):
                 is_txt = file_name.lower().endswith('.txt')
                 if self.enable_repack_on_failure and is_txt and preview_text:
                     logger.info("文件即时检查失效但内容可读，触发重新打包任务...")
-                    await self._repack_and_send_txt(event, file_name, file_component)
+                    # 【重要】这里调用异步生成器，并遍历结果
+                    async for result in self._repack_and_send_txt(event, file_name, file_component):
+                        if result:
+                            await event.send(result.messages)
                 
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段一] 回复失效通知时再次发生错误: {send_e}", exc_info=True)
@@ -278,7 +293,10 @@ class GroupFileCheckerPlugin(Star):
                 is_txt = file_name.lower().endswith('.txt')
                 if self.enable_repack_on_failure and is_txt and preview_text:
                     logger.info("文件在延时复核时失效但内容可读，触发重新打包任务...")
-                    await self._repack_and_send_txt(event, file_name, file_component)
+                    # 【重要】这里调用异步生成器，并遍历结果
+                    async for result in self._repack_and_send_txt(event, file_name, file_component):
+                        if result:
+                            await event.send(result.messages)
 
             except Exception as send_e:
                 logger.error(f"[{group_id}] [阶段二] 回复失效通知时再次发生错误: {send_e}")
