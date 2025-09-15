@@ -98,22 +98,33 @@ class GroupFileCheckerPlugin(Star):
             chain = MessageChain([Reply(id=message_id), Plain(text=fallback_text)])
             await event.send(chain)
 
+    # ...
     async def _repack_and_send_txt(self, event: AstrMessageEvent, original_filename: str, file_component: Comp.File):
         temp_dir = os.path.join(get_astrbot_data_path(), "plugins_data", "file_checker", "temp")
         os.makedirs(temp_dir, exist_ok=True)
         
         repacked_file_path = None
         original_txt_path = None
+        renamed_txt_path = None
         try:
             logger.info(f"开始为失效文件 {original_filename} 进行重新打包...")
+            
+            # 1. 获取原始文件
             original_txt_path = await file_component.get_file()
             
+            # 2. 将临时文件重命名为原始文件名
+            renamed_txt_path = os.path.join(temp_dir, original_filename)
+            os.rename(original_txt_path, renamed_txt_path)
+            logger.info(f"临时文件已重命名为: {renamed_txt_path}")
+    
+            # 3. 设置打包后的文件路径
             base_name = os.path.splitext(original_filename)[0]
             new_zip_name = f"{base_name}.zip"
             repacked_file_path = os.path.join(temp_dir, f"{int(time.time())}_{new_zip_name}")
             
-            # 使用 subprocess 调用系统 zip 命令
-            command = ['zip', '-j', repacked_file_path, original_txt_path]
+            # 4. 使用 subprocess 调用系统 zip 命令
+            # 我们不再需要 -j 参数，因为文件已经被重命名为我们想要的名字
+            command = ['zip', repacked_file_path, renamed_txt_path]
             if self.repack_zip_password:
                 command.extend(['-P', self.repack_zip_password])
             
@@ -138,7 +149,7 @@ class GroupFileCheckerPlugin(Star):
             
             yield event.plain_result(reply_text)
             yield event.chain_result([file_component_to_send])
-            
+                
         except FileNotFoundError:
             logger.error("重新打包失败：容器内未找到 zip 命令。请安装 zip。")
             yield event.plain_result("❌ 重新打包失败。容器内未找到 zip 命令，请联系管理员安装。")
@@ -146,6 +157,7 @@ class GroupFileCheckerPlugin(Star):
             logger.error(f"重新打包并发送文件时出错: {e}", exc_info=True)
             yield event.plain_result("❌ 重新打包并发送文件失败。")
         finally:
+            # 清理临时文件
             if repacked_file_path and os.path.exists(repacked_file_path):
                 async def cleanup_file(path: str):
                     await asyncio.sleep(10)
@@ -155,13 +167,13 @@ class GroupFileCheckerPlugin(Star):
                     except OSError as e:
                         logger.warning(f"删除临时文件 {path} 失败: {e}")
                 asyncio.create_task(cleanup_file(repacked_file_path))
-
-            if original_txt_path and os.path.exists(original_txt_path):
+    
+            if renamed_txt_path and os.path.exists(renamed_txt_path):
                 try:
-                    os.remove(original_txt_path)
-                    logger.info(f"已清理原始临时文件: {original_txt_path}")
+                    os.remove(renamed_txt_path)
+                    logger.info(f"已清理原始临时文件: {renamed_txt_path}")
                 except OSError as e:
-                    logger.warning(f"删除原始临时文件 {original_txt_path} 失败: {e}")
+                    logger.warning(f"删除原始临时文件 {renamed_txt_path} 失败: {e}")
 
     async def _handle_file_check_flow(self, event: AstrMessageEvent, file_name: str, file_id: str, file_component: Comp.File):
         group_id = int(event.get_group_id())
