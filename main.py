@@ -56,7 +56,7 @@ class GroupFileCheckerPlugin(Star):
         except (UnicodeEncodeError, UnicodeDecodeError):
             return filename
     
-    # === 新增函数：通过文件名和时间戳搜索文件ID，并修复了类型错误 ===
+    # === 修复后的函数：通过文件名和时间戳搜索文件ID ===
     async def _search_file_id_by_name(self, event: AstrMessageEvent, file_name: str, search_time: float) -> Optional[str]:
         group_id = int(event.get_group_id())
         try:
@@ -64,13 +64,14 @@ class GroupFileCheckerPlugin(Star):
             client = event.bot
             file_list = await client.api.call_action('get_group_root_files', group_id=group_id)
             
-            # API返回的结果是一个包含'files'键的字典，需要进行检查
             if not isinstance(file_list, dict) or 'files' not in file_list:
                 logger.warning("get_group_root_files API调用返回了意料之外的格式。")
                 return None
-                
-            for file_info in file_list['files']:
-                if isinstance(file_info, dict) and file_info.get('file_name') == file_name and abs(file_info.get('upload_time', 0) - search_time) < 60:
+            
+            # 遍历API返回的文件列表
+            for file_info in file_list.get('files', []):
+                # 检查文件名和上传时间是否匹配
+                if file_info.get('file_name') == file_name and abs(file_info.get('upload_time', 0) - search_time) < 60:
                     logger.info(f"成功通过文件名搜索到文件ID: {file_info.get('file_id')}")
                     return file_info.get('file_id')
             return None
@@ -169,20 +170,19 @@ class GroupFileCheckerPlugin(Star):
             yield event.plain_result(reply_text)
             
             send_time = time.time()
-            sent_message_chain = await event.send(MessageChain([file_component_to_send]))
+            await event.send(MessageChain([file_component_to_send]))
             
-            # 核心修复点：使用备用方案获取新文件的ID
+            # 等待一小段时间，确保文件上传完成并出现在群文件列表
+            await asyncio.sleep(2)
+            
             new_file_id = None
-            if sent_message_chain and len(sent_message_chain) > 0 and isinstance(sent_message_chain[0], File):
-                new_file_id = sent_message_chain[0].id
             
             if not new_file_id:
-                logger.warning("未能从发送的消息中获取新文件的ID，正在尝试通过文件名搜索。")
+                logger.warning("正在尝试通过文件名搜索新文件的ID。")
                 new_file_id = await self._search_file_id_by_name(event, new_zip_name, send_time)
             
             if new_file_id:
                 logger.info(f"新文件发送成功，ID为 {new_file_id}，已加入延时复核队列。")
-                # 使用新文件的 file_name 和 file_id
                 asyncio.create_task(self._task_delayed_recheck(event, new_zip_name, new_file_id, file_component, None))
             else:
                 logger.error("未能获取新文件的ID，无法进行延时复核。")
@@ -215,7 +215,6 @@ class GroupFileCheckerPlugin(Star):
         group_id = int(event.get_group_id())
         message_id = event.message_obj.message_id
         
-        # 核心逻辑：如果发送者是机器人自己，直接跳过处理
         sender_id = event.get_sender_id()
         self_id = event.get_self_id()
         if sender_id == self_id:
