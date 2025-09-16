@@ -123,11 +123,10 @@ class GroupFileCheckerPlugin(Star):
         try:
             logger.info(f"开始为失效文件 {original_filename} 进行重新打包...")
             
-            # 直接使用传入的本地文件路径
             renamed_txt_path = os.path.join(self._temp_dir, original_filename)
             if os.path.exists(renamed_txt_path):
                 os.remove(renamed_txt_path)
-            shutil.copy(local_file_path, renamed_txt_path) # 使用 shutil.copy 确保原始文件不被移动
+            shutil.copy(local_file_path, renamed_txt_path)
 
             base_name = os.path.splitext(original_filename)[0]
             new_zip_name = f"{base_name}.zip"
@@ -204,7 +203,10 @@ class GroupFileCheckerPlugin(Star):
                 logger.error(f"❌ [{group_id}] 文件 '{file_name}' 下载失败或返回了无效路径。")
                 return None
             
-            logger.info(f"[{group_id}] 文件 '{file_name}' 下载成功，本地路径: {local_file_path}")
+            # --- 新增日志，输出文件大小 ---
+            file_size = os.path.getsize(local_file_path)
+            logger.info(f"[{group_id}] 文件 '{file_name}' 下载成功，本地路径: {local_file_path}, 文件大小: {file_size} 字节")
+            
             return local_file_path
 
         except Exception as e:
@@ -226,7 +228,6 @@ class GroupFileCheckerPlugin(Star):
             await asyncio.sleep(self.pre_check_delay_seconds)
             logger.info(f"[{group_id}] [阶段一] 开始即时检查: '{file_name}'")
 
-            # 统一在这里下载文件
             local_file_path = await self._get_local_file_from_event(event, file_component)
             if not local_file_path:
                 await self._send_or_forward(event, f"❌ 文件 '{file_name}' 下载失败，无法进行检查。", message_id)
@@ -234,7 +235,6 @@ class GroupFileCheckerPlugin(Star):
 
             is_gfs_valid = await self._check_validity_via_gfs(event, file_id)
 
-            # 将下载好的本地路径传递给预览函数
             preview_text, preview_extra_info = await self._get_preview_for_file(file_name, local_file_path)
 
             if is_gfs_valid:
@@ -341,8 +341,16 @@ class GroupFileCheckerPlugin(Star):
 
         try:
             if is_txt:
+                # --- 新增日志，记录读取的字节数 ---
+                read_bytes = 4096 # 增加到4KB
+                logger.info(f"正在从本地文件读取前 {read_bytes} 字节进行预览...")
                 with open(local_file_path, 'rb') as f:
-                    content_bytes = f.read(2048)
+                    content_bytes = f.read(read_bytes)
+                
+                # --- 新增日志，输出读取到的原始字节数据 ---
+                # 为了防止日志过长，只输出前100个字节
+                logger.info(f"已读取到原始数据（前100字节）：{content_bytes[:100]}")
+                
                 preview_text, encoding = self._get_preview_from_bytes(content_bytes)
                 extra_info = f"格式为 {encoding}"
                 return preview_text, extra_info
@@ -371,7 +379,6 @@ class GroupFileCheckerPlugin(Star):
                 is_txt = file_name.lower().endswith('.txt')
                 if self.enable_repack_on_failure and is_txt and preview_text:
                     logger.info("文件在延时复核时失效但内容可读，触发重新打包任务...")
-                    # 传递已经下载好的本地文件路径
                     await self._repack_and_send_txt(event, file_name, local_file_path)
 
             except Exception as send_e:
