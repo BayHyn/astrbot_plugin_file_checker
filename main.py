@@ -107,7 +107,6 @@ class GroupFileCheckerPlugin(Star):
             chain = MessageChain([Reply(id=message_id), Plain(text=text)])
             await event.send(chain)
             return
-        logger.info(f"[{event.get_group_id()}] 检测到长消息，将自动合并转发。")
         try:
             forward_node = Node(uin=event.get_self_id(), name="文件检查报告", content=[Reply(id=message_id), Plain(text=text)])
             await event.send(MessageChain([forward_node]))
@@ -136,7 +135,6 @@ class GroupFileCheckerPlugin(Star):
             if self.repack_zip_password:
                 command.extend(['-P', self.repack_zip_password])
 
-            logger.info(f"正在执行打包命令: {' '.join(command)}")
             process = await asyncio.create_subprocess_exec(
                 *command,
                 stdout=subprocess.PIPE,
@@ -202,10 +200,6 @@ class GroupFileCheckerPlugin(Star):
             if not local_file_path or not os.path.exists(local_file_path):
                 logger.error(f"❌ [{group_id}] 文件 '{file_name}' 下载失败或返回了无效路径。")
                 return None
-            
-            # --- 新增日志，输出文件大小 ---
-            file_size = os.path.getsize(local_file_path)
-            logger.info(f"[{group_id}] 文件 '{file_name}' 下载成功，本地路径: {local_file_path}, 文件大小: {file_size} 字节")
             
             return local_file_path
 
@@ -341,15 +335,8 @@ class GroupFileCheckerPlugin(Star):
 
         try:
             if is_txt:
-                # --- 新增日志，记录读取的字节数 ---
-                read_bytes = 4096 # 增加到4KB
-                logger.info(f"正在从本地文件读取前 {read_bytes} 字节进行预览...")
                 with open(local_file_path, 'rb') as f:
-                    content_bytes = f.read(read_bytes)
-                
-                # --- 新增日志，输出读取到的原始字节数据 ---
-                # 为了防止日志过长，只输出前100个字节
-                logger.info(f"已读取到原始数据（前100字节）：{content_bytes[:100]}")
+                    content_bytes = f.read(4096)
                 
                 preview_text, encoding = self._get_preview_from_bytes(content_bytes)
                 extra_info = f"格式为 {encoding}"
