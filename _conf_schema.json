@@ -35,6 +35,12 @@
         "type": "int",
         "default": 300
     },
+    "enable_duplicate_check": {
+        "description": "启用文件重复性检查",
+        "hint": "开启后，当新文件上传时，将根据文件大小检查群文件中是否已存在相同文件。",
+        "type": "bool",
+        "default": false
+    },
     "enable_zip_preview": {
         "description": "启用ZIP文件预览",
         "hint": "开启后，插件会尝试解压收到的ZIP压缩包，并对其中的TXT文件进行内容预览。",

@@ -37,6 +37,7 @@ class GroupFileCheckerPlugin(Star):
         self.default_zip_password: str = self.config.get("default_zip_password", "")
         self.enable_repack_on_failure: bool = self.config.get("enable_repack_on_failure", False)
         self.repack_zip_password: str = self.config.get("repack_zip_password", "")
+        self.enable_duplicate_check: bool = self.config.get("enable_duplicate_check", False)
         
         self.download_semaphore = asyncio.Semaphore(5)
         logger.info("插件 [群文件失效检查] 已加载。")
@@ -78,6 +79,68 @@ class GroupFileCheckerPlugin(Star):
             logger.error(f"[{group_id}] 通过文件名搜索文件ID时出错: {e}", exc_info=True)
             return None
 
+    async def _check_if_file_exists_by_size(self, event: AstrMessageEvent, file_size: int, upload_time: int) -> List[Dict]:
+        """
+        按照 GroupFS 的迭代式实现，遍历所有文件夹查找重复文件。
+        """
+        group_id = int(event.get_group_id())
+        logger.info(f"[{group_id}] 开始按文件大小 ({file_size} 字节) 检查文件是否已存在...")
+        client = event.bot
+        
+        all_found_files = []
+        folders_to_scan = [{'folder_id': '/', 'folder_name': '根目录'}]
+        
+        while folders_to_scan:
+            current_folder = folders_to_scan.pop(0)
+            current_folder_id = current_folder['folder_id']
+            current_folder_name = current_folder['folder_name']
+            
+            try:
+                if current_folder_id == '/':
+                    result = await client.api.call_action('get_group_root_files', group_id=group_id)
+                else:
+                    result = await client.api.call_action('get_group_files_by_folder', group_id=group_id, folder_id=current_folder_id, file_count=1000)
+
+                if not isinstance(result, dict):
+                    logger.warning(f"[{group_id}] get_group_files_by_folder API返回了意料之外的格式。")
+                    continue
+                
+                for file_info in result.get('files', []):
+                    current_file_size = file_info.get('file_size')
+                    if current_file_size == file_size:
+                        file_info['parent_folder_name'] = current_folder_name
+                        all_found_files.append(file_info)
+                
+                for folder_info in result.get('folders', []):
+                    folders_to_scan.append(folder_info)
+
+            except Exception as e:
+                logger.error(f"[{group_id}] 检查文件夹 '{current_folder['folder_name']}' 时出错: {e}", exc_info=True)
+        
+        uploaded_file_to_remove = None
+        min_time_diff = float('inf')
+
+        for file_info in all_found_files:
+            file_modify_time = file_info.get('modify_time')
+            if file_modify_time is not None:
+                time_diff = abs(file_modify_time - upload_time)
+                if time_diff < min_time_diff:
+                    min_time_diff = time_diff
+                    uploaded_file_to_remove = file_info
+        
+        existing_files = []
+        if uploaded_file_to_remove:
+            existing_files = [f for f in all_found_files if f.get('file_id') != uploaded_file_to_remove.get('file_id')]
+        else:
+             existing_files = all_found_files
+        
+        if existing_files:
+            logger.info(f"[{group_id}] 查询完成，共找到 {len(existing_files)} 个大小匹配的**重复**文件。")
+        else:
+            logger.info(f"[{group_id}] 查询完成，未找到大小匹配的重复文件。")
+            
+        return existing_files
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
         group_id = int(event.get_group_id())
@@ -94,12 +157,47 @@ class GroupFileCheckerPlugin(Star):
                     data_dict = segment_dict.get("data", {})
                     file_name = data_dict.get("file")
                     file_id = data_dict.get("file_id")
+                    file_size = data_dict.get("file_size")
+
+                    if isinstance(file_size, str):
+                        try:
+                            file_size = int(file_size)
+                        except ValueError:
+                            logger.error(f"无法将文件大小 '{file_size}' 转换为整数，已跳过重复性检查。")
+                            file_size = None
+
                     if file_name and file_id:
                         logger.info(f"【原始方式】成功解析: 文件名='{file_name}', ID='{file_id}'")
                         file_component = self._find_file_component(event)
                         if not file_component:
                             logger.error("致命错误：无法在高级组件中找到对应的File对象！")
                             return
+                        
+                        if self.enable_duplicate_check and file_size is not None:
+                            upload_time = int(time.time())
+                            existing_files = await self._check_if_file_exists_by_size(event, file_size, upload_time)
+                            if existing_files:
+                                if len(existing_files) == 1:
+                                    existing_file = existing_files[0]
+                                    reply_text = (
+                                        f"💡 提醒：您发送的文件「{file_name}」可能与群文件中的「{existing_file.get('file_name', '未知文件名')}」重复。\n"
+                                        f"  ↳ 上传者: {existing_file.get('uploader_name', '未知')}\n"
+                                        f"  ↳ 修改时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(existing_file.get('modify_time', 0)))}\n"
+                                        f"  ↳ 所属文件夹: {existing_file.get('parent_folder_name', '根目录')}"
+                                    )
+                                    await self._send_or_forward(event, reply_text, event.message_obj.message_id)
+                                else:
+                                    reply_text = f"💡 提醒：您发送的文件「{file_name}」可能与群文件中以下 {len(existing_files)} 个文件重复：\n"
+                                    for idx, file_info in enumerate(existing_files, 1):
+                                        reply_text += (
+                                            f"\n{idx}. {file_info.get('file_name', '未知文件名')}\n"
+                                            f"   ↳ 上传者: {file_info.get('uploader_name', '未知')}\n"
+                                            f"   ↳ 修改时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(file_info.get('modify_time', 0)))}\n"
+                                            f"   ↳ 所属文件夹: {file_info.get('parent_folder_name', '根目录')}"
+                                        )
+                                    await self._send_or_forward(event, reply_text, event.message_obj.message_id)
+                                return
+
                         await self._handle_file_check_flow(event, file_name, file_id, file_component)
                         break
         except Exception as e:
