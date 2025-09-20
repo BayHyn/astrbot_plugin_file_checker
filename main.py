@@ -79,15 +79,12 @@ class GroupFileCheckerPlugin(Star):
             logger.error(f"[{group_id}] 通过文件名搜索文件ID时出错: {e}", exc_info=True)
             return None
 
-    async def _check_if_file_exists_by_size(self, event: AstrMessageEvent, file_size: int, upload_time: int) -> List[Dict]:
-        """
-        按照 GroupFS 的迭代式实现，遍历所有文件夹查找重复文件。
-        """
+    async def _check_if_file_exists_by_size(self, event: AstrMessageEvent, file_name: str, file_size: int, upload_time: int) -> List[Dict]:
         group_id = int(event.get_group_id())
-        logger.info(f"[{group_id}] 开始按文件大小 ({file_size} 字节) 检查文件是否已存在...")
-        client = event.bot
+        logger.info(f"[{group_id}] 开始重复文件检测：目标文件名='{file_name}', 大小={file_size}字节, 消息时间={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(upload_time))}")
         
-        all_found_files = []
+        client = event.bot
+        all_files_dict = {}
         folders_to_scan = [{'folder_id': '/', 'folder_name': '根目录'}]
         
         while folders_to_scan:
@@ -102,42 +99,64 @@ class GroupFileCheckerPlugin(Star):
                     result = await client.api.call_action('get_group_files_by_folder', group_id=group_id, folder_id=current_folder_id, file_count=1000)
 
                 if not isinstance(result, dict):
-                    logger.warning(f"[{group_id}] get_group_files_by_folder API返回了意料之外的格式。")
+                    logger.warning(f"[{group_id}] API返回了意料之外的格式。")
                     continue
                 
+                # 存储所有文件信息
                 for file_info in result.get('files', []):
-                    current_file_size = file_info.get('file_size')
-                    if current_file_size == file_size:
-                        file_info['parent_folder_name'] = current_folder_name
-                        all_found_files.append(file_info)
+                    # 确保文件ID是唯一的键
+                    file_info['parent_folder_name'] = current_folder_name
+                    all_files_dict[file_info.get('file_id')] = file_info
                 
                 for folder_info in result.get('folders', []):
                     folders_to_scan.append(folder_info)
 
             except Exception as e:
-                logger.error(f"[{group_id}] 检查文件夹 '{current_folder['folder_name']}' 时出错: {e}", exc_info=True)
+                logger.error(f"[{group_id}] 遍历文件夹 '{current_folder['folder_name']}' 时出错: {e}", exc_info=True)
         
+        logger.info(f"[{group_id}] 遍历完成，共找到 {len(all_files_dict)} 个文件。")
+        
+        # 步骤 1: 找到所有大小和名称都匹配的候选项
+        possible_duplicates = []
+        for file_info in all_files_dict.values():
+            if file_info.get('file_size') == file_size and file_info.get('file_name') == file_name:
+                possible_duplicates.append(file_info)
+
+        logger.info(f"[{group_id}] 共找到 {len(possible_duplicates)} 个文件名和大小都匹配的文件。")
+        for f in possible_duplicates:
+            logger.info(f"  ↳ 候选项: '{f.get('file_name')}', 大小={f.get('file_size')}, 修改时间={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(f.get('modify_time', 0)))}")
+
+        # 步骤 2: 从候选项中精确排除刚刚上传的新文件
         uploaded_file_to_remove = None
         min_time_diff = float('inf')
-
-        for file_info in all_found_files:
+        
+        for file_info in possible_duplicates:
             file_modify_time = file_info.get('modify_time')
             if file_modify_time is not None:
+                # 找到修改时间最接近当前上传时间的文件
                 time_diff = abs(file_modify_time - upload_time)
                 if time_diff < min_time_diff:
                     min_time_diff = time_diff
                     uploaded_file_to_remove = file_info
-        
-        existing_files = []
+
         if uploaded_file_to_remove:
-            existing_files = [f for f in all_found_files if f.get('file_id') != uploaded_file_to_remove.get('file_id')]
+            logger.info(f"[{group_id}] 识别并排除自身：'{uploaded_file_to_remove.get('file_name')}', 文件ID: {uploaded_file_to_remove.get('file_id')}")
+            # 从候选项中移除新文件
+            existing_files = [f for f in possible_duplicates if f.get('file_id') != uploaded_file_to_remove.get('file_id')]
         else:
-            existing_files = all_found_files
+            existing_files = possible_duplicates
         
         if existing_files:
-            logger.info(f"[{group_id}] 查询完成，共找到 {len(existing_files)} 个大小匹配的**重复**文件。")
+            logger.info(f"[{group_id}] 最终确认 {len(existing_files)} 个真正的重复文件。")
+            for f in existing_files:
+                logger.info(f"  ↳ 文件名: {f.get('file_name', '未知')}")
+                logger.info(f"  ↳ 文件ID: {f.get('file_id', '未知')}")
+                logger.info(f"  ↳ 大小: {f.get('file_size', '未知')}字节")
+                logger.info(f"  ↳ 上传者: {f.get('uploader_name', '未知')}")
+                logger.info(f"  ↳ 修改时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(f.get('modify_time', 0)))}")
+                logger.info(f"  ↳ 所属文件夹: {f.get('parent_folder_name', '根目录')}")
         else:
-            logger.info(f"[{group_id}] 查询完成，未找到大小匹配的重复文件。")
+            logger.info(f"[{group_id}] 未找到真正的重复文件。")
             
         return existing_files
 
@@ -174,8 +193,10 @@ class GroupFileCheckerPlugin(Star):
                             return
                         
                         if self.enable_duplicate_check and file_size is not None:
-                            upload_time = int(time.time())
-                            existing_files = await self._check_if_file_exists_by_size(event, file_size, upload_time)
+                            # 尝试从原始消息中获取时间戳，否则使用当前时间
+                            upload_time = raw_event_data.get("time", int(time.time()))
+                            
+                            existing_files = await self._check_if_file_exists_by_size(event, file_name, file_size, upload_time)
                             if existing_files:
                                 if len(existing_files) == 1:
                                     existing_file = existing_files[0]
@@ -385,6 +406,7 @@ class GroupFileCheckerPlugin(Star):
         extracted_txt_path = None
         
         try:
+            # 第一次尝试：无密码解压
             logger.info("正在尝试无密码解压...")
             command_no_pwd = ["7za", "x", file_path, f"-o{extract_path}", "-y"]
             process = await asyncio.create_subprocess_exec(
@@ -395,8 +417,10 @@ class GroupFileCheckerPlugin(Star):
             stdout, stderr = await process.communicate()
 
             if process.returncode != 0:
+                # 第一次尝试失败，检查是否有默认密码
                 if self.default_zip_password:
                     logger.info("无密码解压失败，正在尝试使用默认密码...")
+                    # 第二次尝试：使用默认密码解压
                     command_with_pwd = ["7za", "x", file_path, f"-o{extract_path}", f"-p{self.default_zip_password}", "-y"]
                     process = await asyncio.create_subprocess_exec(
                         *command_with_pwd,
