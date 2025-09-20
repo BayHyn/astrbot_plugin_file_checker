@@ -10,29 +10,28 @@
 * **合并转发**: 当文本预览或回复消息过长时，自动将内容转为合并转发形式发送，避免刷屏，优化群聊体验。
 * **文本识别**: 集成 `chardet` 库，能自动识别并正确处理包括 `UTF-8`, `GBK`, `Big5` (繁體中文) 在内的多种文本编码格式。
 * **完全可配置**: 从白名单到两阶段的延时，再到预览长度和转发阈值，插件的核心参数均可在后台自定义。
-* **并发控制与自动清理**: 内置并发队列和临时文件自动清理机制，确保插件在高压下稳定运行且不占用服务器资源。
 * **压缩文件处理**: 对于**已失效的 `.txt` 文件**，如果机器人仍能获取其内容，插件会自动将其加密压缩为 `.zip` 格式并重新发送。这个新文件将接替原文件，进入延时复核队列。同时，插件也具备解压压缩包内的 `.txt` 文件并进行预览的能力。
-* **重复文件检测**: 新增重复文件检测功能，能自动识别已上传过的文件，并提供文件的历史检查记录，避免重复上传和检查。
+* **重复文件检测**: 具有重复文件检测功能，能自动识别已上传过的文件，并提供文件的历史检查记录，避免重复上传。
 
 ---
 
 ## 🚀 安装
 
 1. **进入容器安装依赖**：如果你的 AstrBot 运行在 Docker 容器中，请先进入容器内部。
-    
-    ```bash
-    docker ps  # 找到你的 AstrBot 容器ID
-    docker exec -it <容器ID> bash  # 或者 sh
-    ```
-    
-    然后在容器内安装 `zip` 依赖库：
-    
-    ```bash
-    # 对于 Debian/Ubuntu 系统
-    apt-get update && apt-get install zip
-    # 对于 Alpine Linux 系统
-    apk add zip
-    ```
+   
+   ```bash
+   docker ps  # 找到你的 AstrBot 容器ID
+   docker exec -it <容器ID> bash  # 或者 sh
+   ```
+   
+   然后在容器内安装 `zip` 依赖库：
+   
+   ```bash
+   # 对于 Debian/Ubuntu 系统
+   apt-get update && apt-get install zip p7zip-full
+   # 对于 Alpine Linux 系统
+   apk add zip p7zip
+   ```
 2. 下载本仓库。
 3. 将整个 `astrbot_plugin_file_checker` 文件夹放入 `astrbot` 的 `plugins` 目录中。
 4. 重启 AstrBot。

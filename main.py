@@ -19,7 +19,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import Aioc
     "astrbot_plugin_file_checker",
     "Foolllll",
     "群文件失效检查",
-    "1.3",
+    "1.4",
     "https://github.com/Foolllll-J/astrbot_plugin_file_checker"
 )
 class GroupFileCheckerPlugin(Star):
@@ -132,7 +132,7 @@ class GroupFileCheckerPlugin(Star):
         if uploaded_file_to_remove:
             existing_files = [f for f in all_found_files if f.get('file_id') != uploaded_file_to_remove.get('file_id')]
         else:
-             existing_files = all_found_files
+            existing_files = all_found_files
         
         if existing_files:
             logger.info(f"[{group_id}] 查询完成，共找到 {len(existing_files)} 个大小匹配的**重复**文件。")
@@ -181,9 +181,9 @@ class GroupFileCheckerPlugin(Star):
                                     existing_file = existing_files[0]
                                     reply_text = (
                                         f"💡 提醒：您发送的文件「{file_name}」可能与群文件中的「{existing_file.get('file_name', '未知文件名')}」重复。\n"
-                                        f"  ↳ 上传者: {existing_file.get('uploader_name', '未知')}\n"
-                                        f"  ↳ 修改时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(existing_file.get('modify_time', 0)))}\n"
-                                        f"  ↳ 所属文件夹: {existing_file.get('parent_folder_name', '根目录')}"
+                                        f"  ↳ 上传者: {existing_file.get('uploader_name', '未知')}\n"
+                                        f"  ↳ 修改时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(existing_file.get('modify_time', 0)))}\n"
+                                        f"  ↳ 所属文件夹: {existing_file.get('parent_folder_name', '根目录')}"
                                     )
                                     await self._send_or_forward(event, reply_text, event.message_obj.message_id)
                                 else:
@@ -191,11 +191,11 @@ class GroupFileCheckerPlugin(Star):
                                     for idx, file_info in enumerate(existing_files, 1):
                                         reply_text += (
                                             f"\n{idx}. {file_info.get('file_name', '未知文件名')}\n"
-                                            f"   ↳ 上传者: {file_info.get('uploader_name', '未知')}\n"
-                                            f"   ↳ 修改时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(file_info.get('modify_time', 0)))}\n"
-                                            f"   ↳ 所属文件夹: {file_info.get('parent_folder_name', '根目录')}"
+                                            f"    ↳ 上传者: {file_info.get('uploader_name', '未知')}\n"
+                                            f"    ↳ 修改时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(file_info.get('modify_time', 0)))}\n"
+                                            f"    ↳ 所属文件夹: {file_info.get('parent_folder_name', '根目录')}"
                                         )
-                                    await self._send_or_forward(event, reply_text, event.message_obj.message_id)
+                                await self._send_or_forward(event, reply_text, event.message_obj.message_id)
                                 return
 
                         await self._handle_file_check_flow(event, file_name, file_id, file_component)
@@ -359,51 +359,99 @@ class GroupFileCheckerPlugin(Star):
         try:
             detection = chardet.detect(content_bytes)
             encoding = detection.get('encoding', 'utf-8') or 'utf-8'
+            
+            # 优先使用 chardet 的高置信度结果
             if encoding and detection['confidence'] > 0.7:
                 decoded_text = content_bytes.decode(encoding, errors='ignore').strip()
                 return decoded_text, encoding
+            
+            # 如果置信度低或无法识别，使用 chardet 猜测的最可能编码进行回退
+            if encoding:
+                decoded_text = content_bytes.decode(encoding, errors='ignore').strip()
+                return decoded_text, f"{encoding} (低置信度回退)"
+                
             return "", "未知"
+            
         except Exception:
             return "", "未知"
             
     async def _get_preview_from_zip(self, file_path: str) -> tuple[str, str]:
-        def _try_unzip(pwd: Optional[str] = None) -> Optional[tuple[bytes, str]]:
-            with zipfile.ZipFile(file_path, 'r') as zf:
-                if pwd:
-                    zf.setpassword(pwd.encode('utf-8'))
-                txt_files_garbled = sorted([f for f in zf.namelist() if f.lower().endswith('.txt')])
-                if not txt_files_garbled:
-                    return None
-                first_txt_garbled = txt_files_garbled[0]
-                first_txt_fixed = self._fix_zip_filename(first_txt_garbled)
-                content_bytes = zf.read(first_txt_garbled)
-                return content_bytes, first_txt_fixed
-
-        content_bytes, inner_filename = None, None
+        temp_dir = os.path.join(get_astrbot_data_path(), "plugins_data", "file_checker", "temp")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        extract_path = os.path.join(temp_dir, f"extract_{int(time.time())}")
+        os.makedirs(extract_path, exist_ok=True)
+        
+        extracted_txt_path = None
+        
         try:
-            result = _try_unzip()
-            if result: content_bytes, inner_filename = result
-        except RuntimeError:
-            if self.default_zip_password:
-                logger.info(f"无密码解压 '{os.path.basename(file_path)}' 失败，尝试使用默认密码...")
-                try:
-                    result = _try_unzip(self.default_zip_password)
-                    if result: content_bytes, inner_filename = result
-                except Exception as e:
-                    logger.error(f"使用默认密码解压失败: {e}")
-                    return "", ""
-            else:
-                return "", ""
+            logger.info("正在尝试无密码解压...")
+            command_no_pwd = ["7za", "x", file_path, f"-o{extract_path}", "-y"]
+            process = await asyncio.create_subprocess_exec(
+                *command_no_pwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+
+            if process.returncode != 0:
+                if self.default_zip_password:
+                    logger.info("无密码解压失败，正在尝试使用默认密码...")
+                    command_with_pwd = ["7za", "x", file_path, f"-o{extract_path}", f"-p{self.default_zip_password}", "-y"]
+                    process = await asyncio.create_subprocess_exec(
+                        *command_with_pwd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE
+                    )
+                    stdout, stderr = await process.communicate()
+                    
+                    if process.returncode != 0:
+                        error_message = stderr.decode('utf-8')
+                        logger.error(f"使用默认密码解压失败: {error_message}")
+                        return "", "解压失败"
+                else:
+                    error_message = stderr.decode('utf-8')
+                    logger.error(f"使用 7za 命令解压失败且未设置默认密码: {error_message}")
+                    return "", "解压失败"
+
+            # 成功解压后，查找 .txt 文件
+            all_extracted_files = os.listdir(extract_path)
+            txt_files = [f for f in all_extracted_files if f.lower().endswith('.txt')]
+            
+            if not txt_files:
+                return "", "无法找到 .txt 文件"
+                
+            first_txt_file = txt_files[0]
+            extracted_txt_path = os.path.join(extract_path, first_txt_file)
+            
+            with open(extracted_txt_path, 'rb') as f:
+                content_bytes = f.read(2048)
+            
+            preview_text, encoding = self._get_preview_from_bytes(content_bytes)
+            extra_info = f"已解压「{first_txt_file}」(格式 {encoding})"
+            return preview_text, extra_info
+            
+        except FileNotFoundError:
+            logger.error("解压失败：容器内未找到 7za 命令。请安装 p7zip-full。")
+            return "", "未安装 7za"
         except Exception as e:
-            logger.error(f"处理ZIP文件时发生未知错误: {e}")
-            return "", ""
-
-        if not content_bytes:
-            return "", ""
-
-        preview_text, encoding = self._get_preview_from_bytes(content_bytes)
-        extra_info = f"已解压「{inner_filename}」(格式 {encoding})"
-        return preview_text, extra_info
+            logger.error(f"处理ZIP文件时发生未知错误: {e}", exc_info=True)
+            return "", "未知错误"
+        finally:
+            if extract_path and os.path.exists(extract_path):
+                async def cleanup_folder(path: str):
+                    await asyncio.sleep(5)
+                    try:
+                        for item in os.listdir(path):
+                            item_path = os.path.join(path, item)
+                            if os.path.isfile(item_path):
+                                os.remove(item_path)
+                        os.rmdir(path)
+                        logger.info(f"已清理临时文件夹: {path}")
+                    except OSError as e:
+                        logger.warning(f"删除临时文件夹 {path} 失败: {e}")
+                
+                asyncio.create_task(cleanup_folder(extract_path))
 
     async def _get_preview_for_file(self, file_name: str, file_component: Comp.File) -> tuple[str, str]:
         is_txt = file_name.lower().endswith('.txt')
