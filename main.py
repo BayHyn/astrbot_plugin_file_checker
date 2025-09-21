@@ -2,7 +2,6 @@ import asyncio
 import os
 from typing import List, Dict, Optional
 import time
-import zipfile
 import chardet
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 import subprocess
@@ -81,7 +80,6 @@ class GroupFileCheckerPlugin(Star):
 
     async def _check_if_file_exists_by_size(self, event: AstrMessageEvent, file_name: str, file_size: int, upload_time: int) -> List[Dict]:
         group_id = int(event.get_group_id())
-        logger.info(f"[{group_id}] 开始重复文件检测：目标文件名='{file_name}', 大小={file_size}字节, 消息时间={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(upload_time))}")
         
         client = event.bot
         all_files_dict = {}
@@ -102,9 +100,7 @@ class GroupFileCheckerPlugin(Star):
                     logger.warning(f"[{group_id}] API返回了意料之外的格式。")
                     continue
                 
-                # 存储所有文件信息
                 for file_info in result.get('files', []):
-                    # 确保文件ID是唯一的键
                     file_info['parent_folder_name'] = current_folder_name
                     all_files_dict[file_info.get('file_id')] = file_info
                 
@@ -116,56 +112,56 @@ class GroupFileCheckerPlugin(Star):
         
         logger.info(f"[{group_id}] 遍历完成，共找到 {len(all_files_dict)} 个文件。")
         
-        # 步骤 1: 找到所有大小和名称都匹配的候选项
         possible_duplicates = []
         for file_info in all_files_dict.values():
-            if file_info.get('file_size') == file_size and file_info.get('file_name') == file_name:
+            if file_info.get('file_size') == file_size:
                 possible_duplicates.append(file_info)
 
-        logger.info(f"[{group_id}] 共找到 {len(possible_duplicates)} 个文件名和大小都匹配的文件。")
-        for f in possible_duplicates:
-            logger.info(f"  ↳ 候选项: '{f.get('file_name')}', 大小={f.get('file_size')}, 修改时间={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(f.get('modify_time', 0)))}")
-
-        # 步骤 2: 从候选项中精确排除刚刚上传的新文件
-        uploaded_file_to_remove = None
-        min_time_diff = float('inf')
+        logger.info(f"[{group_id}] 共找到 {len(possible_duplicates)} 个大小匹配的候选项。")
         
-        for file_info in possible_duplicates:
-            file_modify_time = file_info.get('modify_time')
+        existing_files = []
+        removed_files = []
+        
+        for f in possible_duplicates:
+            file_modify_time = f.get('modify_time')
+            
             if file_modify_time is not None:
-                # 找到修改时间最接近当前上传时间的文件
-                time_diff = abs(file_modify_time - upload_time)
-                if time_diff < min_time_diff:
-                    min_time_diff = time_diff
-                    uploaded_file_to_remove = file_info
+                file_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(file_modify_time))
+                
+                # 比较时间戳
+                if file_modify_time == upload_time:
+                    removed_files.append(f)
+                else:
+                    existing_files.append(f)
+            else:
+                existing_files.append(f)
 
-        if uploaded_file_to_remove:
-            logger.info(f"[{group_id}] 识别并排除自身：'{uploaded_file_to_remove.get('file_name')}', 文件ID: {uploaded_file_to_remove.get('file_id')}")
-            # 从候选项中移除新文件
-            existing_files = [f for f in possible_duplicates if f.get('file_id') != uploaded_file_to_remove.get('file_id')]
-        else:
-            existing_files = possible_duplicates
+        if removed_files:
+            logger.info(f"[{group_id}] 已从候选项中排除自身文件，共 {len(removed_files)} 个。")
         
         if existing_files:
             logger.info(f"[{group_id}] 最终确认 {len(existing_files)} 个真正的重复文件。")
             for f in existing_files:
-                logger.info(f"  ↳ 文件名: {f.get('file_name', '未知')}")
-                logger.info(f"  ↳ 文件ID: {f.get('file_id', '未知')}")
-                logger.info(f"  ↳ 大小: {f.get('file_size', '未知')}字节")
-                logger.info(f"  ↳ 上传者: {f.get('uploader_name', '未知')}")
-                logger.info(f"  ↳ 修改时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(f.get('modify_time', 0)))}")
-                logger.info(f"  ↳ 所属文件夹: {f.get('parent_folder_name', '根目录')}")
+                modify_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(f.get('modify_time', 0)))
+                logger.info(
+                    f"  ↳ 文件名: '{f.get('file_name', '未知')}'\n"
+                    f"    文件ID: {f.get('file_id', '未知')}\n"
+                    f"    大小: {f.get('file_size', '未知')}字节\n"
+                    f"    上传者: {f.get('uploader_name', '未知')}\n"
+                    f"    修改时间: {modify_time_str}\n"
+                    f"    所属文件夹: {f.get('parent_folder_name', '根目录')}"
+                )
         else:
             logger.info(f"[{group_id}] 未找到真正的重复文件。")
-            
+        
         return existing_files
-
+    
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
         group_id = int(event.get_group_id())
         if self.group_whitelist and group_id not in self.group_whitelist:
             return
-            
+        
         try:
             raw_event_data = event.message_obj.raw_message
             message_list = raw_event_data.get("message")
@@ -193,9 +189,10 @@ class GroupFileCheckerPlugin(Star):
                             return
                         
                         if self.enable_duplicate_check and file_size is not None:
-                            # 尝试从原始消息中获取时间戳，否则使用当前时间
+                            # 获取文件上传时的精确时间戳
                             upload_time = raw_event_data.get("time", int(time.time()))
-                            
+                            logger.info(f"[{group_id}] 新上传文件时间戳: {upload_time} ({time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(upload_time))})")
+
                             existing_files = await self._check_if_file_exists_by_size(event, file_name, file_size, upload_time)
                             if existing_files:
                                 if len(existing_files) == 1:
@@ -216,7 +213,7 @@ class GroupFileCheckerPlugin(Star):
                                             f"    ↳ 修改时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(file_info.get('modify_time', 0)))}\n"
                                             f"    ↳ 所属文件夹: {file_info.get('parent_folder_name', '根目录')}"
                                         )
-                                await self._send_or_forward(event, reply_text, event.message_obj.message_id)
+                                    await self._send_or_forward(event, reply_text, event.message_obj.message_id)
                                 return
 
                         await self._handle_file_check_flow(event, file_name, file_id, file_component)
@@ -330,7 +327,7 @@ class GroupFileCheckerPlugin(Star):
         if sender_id == self_id:
             logger.info(f"[{group_id}] 机器人发送的文件，直接跳过处理。")
             return
-            
+        
         await asyncio.sleep(self.pre_check_delay_seconds)
         logger.info(f"[{group_id}] [阶段一] 开始即时检查: '{file_name}'")
 
@@ -390,7 +387,7 @@ class GroupFileCheckerPlugin(Star):
             if encoding:
                 decoded_text = content_bytes.decode(encoding, errors='ignore').strip()
                 return decoded_text, f"{encoding} (低置信度回退)"
-                
+            
             return "", "未知"
             
         except Exception:
