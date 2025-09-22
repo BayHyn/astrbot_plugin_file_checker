@@ -128,8 +128,7 @@ class GroupFileCheckerPlugin(Star):
             if file_modify_time is not None:
                 file_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(file_modify_time))
                 
-                # 比较时间戳
-                if file_modify_time == upload_time:
+                if abs(file_modify_time - upload_time) <= 2:
                     removed_files.append(f)
                 else:
                     existing_files.append(f)
