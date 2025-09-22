@@ -5,13 +5,12 @@ import time
 import chardet
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 import subprocess
-from aiocqhttp.exceptions import ActionFailed
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
-from astrbot.api.message_components import Reply, Plain, Node, File
+from astrbot.api.message_components import Reply, Plain, Node, Nodes, File
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
 @register(
@@ -188,7 +187,6 @@ class GroupFileCheckerPlugin(Star):
                             return
                         
                         if self.enable_duplicate_check and file_size is not None:
-                            # 获取文件上传时的精确时间戳
                             upload_time = raw_event_data.get("time", int(time.time()))
                             logger.info(f"[{group_id}] 新上传文件时间戳: {upload_time} ({time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(upload_time))})")
 
@@ -220,15 +218,32 @@ class GroupFileCheckerPlugin(Star):
         except Exception as e:
             logger.error(f"【原始方式】处理消息时发生致命错误: {e}", exc_info=True)
 
+    def _split_text_by_length(self, text: str, max_length: int = 1000) -> List[str]:
+        """将文本按指定长度分割成一个字符串列表"""
+        return [text[i:i + max_length] for i in range(0, len(text), max_length)]
+
     async def _send_or_forward(self, event: AstrMessageEvent, text: str, message_id: int):
         if self.forward_threshold <= 0 or len(text) <= self.forward_threshold:
             chain = MessageChain([Reply(id=message_id), Plain(text=text)])
             await event.send(chain)
             return
+        
         logger.info(f"[{event.get_group_id()}] 检测到长消息，将自动合并转发。")
+
         try:
-            forward_node = Node(uin=event.get_self_id(), name="文件检查报告", content=[Reply(id=message_id), Plain(text=text)])
-            await event.send(MessageChain([forward_node]))
+            split_texts = self._split_text_by_length(text, 4000)
+            forward_nodes = []
+            
+            first_node_content = [Reply(id=message_id), Plain(text=split_texts[0])]
+            forward_nodes.append(Node(uin=event.get_self_id(), name="文件检查报告", content=first_node_content))
+            
+            for i, part_text in enumerate(split_texts[1:], 1):
+                forward_nodes.append(Node(uin=event.get_self_id(), name=f"文件检查报告 ({i+1})", content=[Plain(text=part_text)]))
+
+            merged_forward_message = Nodes(nodes=forward_nodes)
+
+            await event.send(MessageChain([merged_forward_message]))
+            
         except Exception as e:
             logger.error(f"[{event.get_group_id()}] 合并转发长消息时出错: {e}", exc_info=True)
             fallback_text = text[:self.forward_threshold] + "... (消息过长且合并转发失败)"
@@ -377,12 +392,10 @@ class GroupFileCheckerPlugin(Star):
             detection = chardet.detect(content_bytes)
             encoding = detection.get('encoding', 'utf-8') or 'utf-8'
             
-            # 优先使用 chardet 的高置信度结果
             if encoding and detection['confidence'] > 0.7:
                 decoded_text = content_bytes.decode(encoding, errors='ignore').strip()
                 return decoded_text, encoding
             
-            # 如果置信度低或无法识别，使用 chardet 猜测的最可能编码进行回退
             if encoding:
                 decoded_text = content_bytes.decode(encoding, errors='ignore').strip()
                 return decoded_text, f"{encoding} (低置信度回退)"
@@ -402,7 +415,6 @@ class GroupFileCheckerPlugin(Star):
         extracted_txt_path = None
         
         try:
-            # 第一次尝试：无密码解压
             logger.info("正在尝试无密码解压...")
             command_no_pwd = ["7za", "x", file_path, f"-o{extract_path}", "-y"]
             process = await asyncio.create_subprocess_exec(
@@ -413,10 +425,8 @@ class GroupFileCheckerPlugin(Star):
             stdout, stderr = await process.communicate()
 
             if process.returncode != 0:
-                # 第一次尝试失败，检查是否有默认密码
                 if self.default_zip_password:
                     logger.info("无密码解压失败，正在尝试使用默认密码...")
-                    # 第二次尝试：使用默认密码解压
                     command_with_pwd = ["7za", "x", file_path, f"-o{extract_path}", f"-p{self.default_zip_password}", "-y"]
                     process = await asyncio.create_subprocess_exec(
                         *command_with_pwd,
@@ -434,7 +444,6 @@ class GroupFileCheckerPlugin(Star):
                     logger.error(f"使用 7za 命令解压失败且未设置默认密码: {error_message}")
                     return "", "解压失败"
 
-            # 成功解压后，查找 .txt 文件
             all_extracted_files = os.listdir(extract_path)
             txt_files = [f for f in all_extracted_files if f.lower().endswith('.txt')]
             
@@ -445,7 +454,7 @@ class GroupFileCheckerPlugin(Star):
             extracted_txt_path = os.path.join(extract_path, first_txt_file)
             
             with open(extracted_txt_path, 'rb') as f:
-                content_bytes = f.read(2048)
+                content_bytes = f.read(self.preview_length * 4)
             
             preview_text, encoding = self._get_preview_from_bytes(content_bytes)
             extra_info = f"已解压「{first_txt_file}」(格式 {encoding})"
@@ -484,7 +493,7 @@ class GroupFileCheckerPlugin(Star):
                 local_file_path = await file_component.get_file()
             if is_txt:
                 with open(local_file_path, 'rb') as f:
-                    content_bytes = f.read(2048)
+                    content_bytes = f.read(self.preview_length * 4)
                 preview_text, encoding = self._get_preview_from_bytes(content_bytes)
                 extra_info = f"格式为 {encoding}"
                 return preview_text, extra_info
