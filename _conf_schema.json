@@ -47,6 +47,12 @@
         "type": "bool",
         "default": true
     },
+    "zip_extraction_size_limit_mb": {
+        "description": "ZIP解压大小上限 (MB)",
+        "hint": "ZIP文件大小超过此值时，将不会尝试解压以获取预览。设置为 0 则不限制。",
+        "type": "int",
+        "default": 100
+    },
     "default_zip_password": {
         "description": "ZIP文件默认解压密码",
         "hint": "当直接解压ZIP失败时，会尝试使用此密码进行解压。留空表示不使用密码重试。",

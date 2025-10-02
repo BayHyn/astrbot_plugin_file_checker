@@ -33,6 +33,7 @@ class GroupFileCheckerPlugin(Star):
         self.preview_length: int = self.config.get("preview_length", 200)
         self.forward_threshold: int = self.config.get("forward_threshold", 300)
         self.enable_zip_preview: bool = self.config.get("enable_zip_preview", True)
+        self.zip_extraction_size_limit_mb: int = self.config.get("zip_extraction_size_limit_mb", 100)
         self.default_zip_password: str = self.config.get("default_zip_password", "")
         self.enable_repack_on_failure: bool = self.config.get("enable_repack_on_failure", False)
         self.repack_zip_password: str = self.config.get("repack_zip_password", "")
@@ -511,6 +512,13 @@ class GroupFileCheckerPlugin(Star):
                 extra_info = f"格式为 {encoding}"
                 return preview_text, extra_info
             if is_zip:
+                zip_size_bytes = os.path.getsize(local_file_path)
+                zip_size_mb = zip_size_bytes / (1024 * 1024)
+                limit_mb = self.zip_extraction_size_limit_mb
+
+                if limit_mb > 0 and zip_size_mb > limit_mb:
+                    logger.info(f"ZIP文件大小 ({zip_size_mb:.2f} MB) 超过配置的上限 ({limit_mb} MB)，跳过解压预览。")
+                    return "", "文件过大，跳过解压"
                 return await self._get_preview_from_zip(local_file_path)
         except Exception as e:
             logger.error(f"获取预览时下载或读取文件失败: {e}", exc_info=True)

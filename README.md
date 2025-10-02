@@ -52,6 +52,7 @@
 | **长消息合并转发阈值 (字符)** (`forward_threshold`) | int       | `500`  | 当插件的单条回复（主要是带预览的）超过此字数时，将自动转为合并转发。设置为 `0` 则禁用此功能。 |
 | **启用重复文件检测** (`enable_duplicate_check`) | bool     | `false` | 开启后，当有新文件上传时，插件会检查群内是否已存在相同文件，并提供历史记录。 |
 | **启用ZIP文件预览** (`enable_zip_preview`) | bool     | `true` | 开启后，插件会尝试解压收到的ZIP压缩包，并对其中的TXT文件进行内容预览。 |
+| **ZIP解压大小上限 (MB)** (`zip_extraction_size_limit_mb`) | int | `100` | ZIP文件大小**超过此值**时，将**不会**尝试解压以获取预览。设置为 `0` 则表示不限制。 |
 | **ZIP文件默认解压密码** (`default_zip_password`) | string     | `""`   | 当直接解压ZIP失败时，会尝试使用此密码进行解压。留空表示不使用密码重试。 |
 | **为失效TXT重新打包发送** (`enable_repack_on_failure`) | bool     | `false`| 开启后，当TXT文件初步检查失效但机器人仍能下载时，会自动将其压缩为ZIP文件尝试发送。 |
 | **重新打包ZIP的加密密码** (`repack_zip_password`) | string     | `""`   | 为失效TXT重新打包成ZIP文件时使用的加密密码。留空表示不加密。       |
