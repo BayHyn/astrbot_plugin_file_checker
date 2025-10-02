@@ -3,13 +3,14 @@ import os
 from typing import List, Dict, Optional
 import time
 import chardet
-from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 import subprocess
+import re
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from astrbot.api.message_components import Reply, Plain, Node, Nodes, File
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
@@ -251,6 +252,12 @@ class GroupFileCheckerPlugin(Star):
             await event.send(chain)
 
     async def _repack_and_send_txt(self, event: AstrMessageEvent, original_filename: str, file_component: Comp.File):
+        base_name = os.path.basename(original_filename)
+        if re.search(r'[^a-zA-Z0-9._-\s"?]', base_name):
+            logger.error(f"文件名 '{original_filename}' 包含非安全字符，已跳过重新打包。")
+            await event.send(MessageChain([Plain("❌ 文件名包含不安全字符，已跳过重新打包。")]))
+            return
+        
         temp_dir = os.path.join(get_astrbot_data_path(), "plugins_data", "file_checker", "temp")
         os.makedirs(temp_dir, exist_ok=True)
         
@@ -451,6 +458,12 @@ class GroupFileCheckerPlugin(Star):
                 return "", "无法找到 .txt 文件"
                 
             first_txt_file = txt_files[0]
+            safe_txt_name = os.path.basename(first_txt_file)
+            
+            if re.search(r'[^a-zA-Z0-9._-\s"?]', safe_txt_name):
+                logger.error(f"解压出的文件名 '{first_txt_file}' 包含非安全字符，跳过预览。")
+                return "", "解压出的文件名不安全"
+
             extracted_txt_path = os.path.join(extract_path, first_txt_file)
             
             with open(extracted_txt_path, 'rb') as f:
