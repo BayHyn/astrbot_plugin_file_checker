@@ -254,7 +254,7 @@ class GroupFileCheckerPlugin(Star):
 
     async def _repack_and_send_txt(self, event: AstrMessageEvent, original_filename: str, file_component: Comp.File):
         base_name = os.path.basename(original_filename)
-        if re.search(r'[^a-zA-Z0-9._-\s"?]', base_name):
+        if re.search(r'[\\/|*<>;"\x00-\x1F\x7F]', base_name):
             logger.error(f"文件名 '{original_filename}' 包含非安全字符，已跳过重新打包。")
             await event.send(MessageChain([Plain("❌ 文件名包含不安全字符，已跳过重新打包。")]))
             return
