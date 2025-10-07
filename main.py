@@ -461,7 +461,7 @@ class GroupFileCheckerPlugin(Star):
             first_txt_file = txt_files[0]
             safe_txt_name = os.path.basename(first_txt_file)
             
-            if re.search(r'[^a-zA-Z0-9._-\s"?]', safe_txt_name):
+            if re.search(r'[\\/|*<>;"\x00-\x1F\x7F]', safe_txt_name):
                 logger.error(f"解压出的文件名 '{first_txt_file}' 包含非安全字符，跳过预览。")
                 return "", "解压出的文件名不安全"
 
