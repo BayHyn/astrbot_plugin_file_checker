@@ -213,7 +213,7 @@ class GroupFileCheckerPlugin(Star):
                                             f"    ↳ 所属文件夹: {file_info.get('parent_folder_name', '根目录')}"
                                         )
                                     await self._send_or_forward(event, reply_text, event.message_obj.message_id)
-                                return
+                                break
 
                         await self._handle_file_check_flow(event, file_name, file_id, file_component)
                         break
